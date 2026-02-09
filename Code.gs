@@ -5,13 +5,22 @@ function getConfig_() {
     yahooClientSecret: props.getProperty('YAHOO_CLIENT_SECRET'),
     supabaseUrl: props.getProperty('SUPABASE_URL'),
     supabaseAnonKey: props.getProperty('SUPABASE_ANON_KEY'),
+    recipientEmail: props.getProperty('RECIPIENT_EMAIL')
   };
+}
+
+function getRecipientEmail_() {
+  var email = PropertiesService.getScriptProperties().getProperty('RECIPIENT_EMAIL');
+  if (!email) {
+    throw new Error('[getRecipientEmail_] Missing RECIPIENT_EMAIL script property.');
+  }
+  return email;
 }
 
 function supabaseRequest_(path, method, payload) {
   var cfg = getConfig_();
   if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
-    throw new Error('Supabase configuration missing. Check SUPABASE_URL and SUPABASE_ANON_KEY script properties.');
+    throw new Error('[supabaseRequest_] Supabase configuration missing. Check SUPABASE_URL and SUPABASE_ANON_KEY script properties.');
   }
 
   var url = cfg.supabaseUrl.replace(/\/$/, '') + path;
@@ -30,12 +39,15 @@ function supabaseRequest_(path, method, payload) {
     options.payload = JSON.stringify(payload);
   }
 
-  var response = UrlFetchApp.fetch(url, options);
+  var response = retryWithBackoff_(function() {
+    return UrlFetchApp.fetch(url, options);
+  });
+
   var status = response.getResponseCode();
   var body = response.getContentText();
 
   if (status < 200 || status >= 300) {
-    throw new Error('Supabase request failed. Status ' + status + ' Body: ' + body);
+    throw new Error('[supabaseRequest_] HTTP ' + status + ': ' + body);
   }
 
   return body ? JSON.parse(body) : null;
@@ -218,6 +230,7 @@ function getCurrentWeek_(leagueKey) {
 }
 
 function getWeekMatchups_(week) {
+  validateWeek_(week, 'getWeekMatchups_');
   var leagueKey = getLeagueKey_();
   var data = yahooApiRequest_('/league/' + leagueKey + '/scoreboard;week=' + week, {});
   var fantasyContent = data && data.fantasy_content;
@@ -320,6 +333,7 @@ function getWeekMatchups_(week) {
 }
 
 function getWeekTeamHighlights_(week, leagueKey) {
+  validateWeek_(week, 'getWeekTeamHighlights_');
   leagueKey = leagueKey || getLeagueKey_();
   var data = yahooApiRequest_('/league/' + leagueKey + '/scoreboard;week=' + week, {});
   var fantasyContent = data && data.fantasy_content;
@@ -426,6 +440,7 @@ function getWeekTeamHighlights_(week, leagueKey) {
 }
 
 function getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey) {
+  validateWeek_(week, 'getWeekPointsMapForPlayerKeys_');
   leagueKey = leagueKey || getLeagueKey_();
   var map = {};
   if (!playerKeys || !playerKeys.length) {
@@ -492,6 +507,7 @@ function getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey) {
 }
 
 function getWeekBenchSummary_(week, leagueKey) {
+  validateWeek_(week, 'getWeekBenchSummary_');
   leagueKey = leagueKey || getLeagueKey_();
   var data = yahooApiRequest_('/league/' + leagueKey + '/teams;week=' + week + ';out=roster', {});
   var fantasyContent = data && data.fantasy_content;
@@ -641,6 +657,7 @@ function getWeekBenchSummary_(week, leagueKey) {
 }
 
 function getWeekStartedPlayerKeys_(week, leagueKey) {
+  validateWeek_(week, 'getWeekStartedPlayerKeys_');
   leagueKey = leagueKey || getLeagueKey_();
   var data = yahooApiRequest_('/league/' + leagueKey + '/teams;week=' + week + ';out=roster', {});
   var fantasyContent = data && data.fantasy_content;
@@ -719,6 +736,7 @@ function getWeekStartedPlayerKeys_(week, leagueKey) {
 }
 
 function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagueKey) {
+  validateWeek_(week, 'getTopPlayersForWeekAndPosition_');
   leagueKey = leagueKey || getLeagueKey_();
   var playerKeys = Object.keys(ownerMap || {});
   if (!playerKeys.length) {
@@ -885,6 +903,7 @@ function getPlayerOwnerMap_(leagueKey) {
 }
 
 function getTopWaiverPickupsForWeek_(week, limit, leagueKey) {
+  validateWeek_(week, 'getTopWaiverPickupsForWeek_');
   leagueKey = leagueKey || getLeagueKey_();
   var data = yahooApiRequest_('/league/' + leagueKey + '/transactions', {});
   var fantasyContent = data && data.fantasy_content;
@@ -1152,36 +1171,133 @@ function buildLeagueSnapshot_(league) {
   return lines.join('\n');
 }
 
-function pullFantasyData() {
-  var leagues = getAllLeagues_();
-  if (!leagues || !leagues.length) {
-    Logger.log('No leagues found for this Yahoo account.');
-    return;
+var API_CALL_COUNT = 0;
+var MIN_WEEK = 1;
+var MAX_WEEK = 18;
+
+function validateWeek_(week, functionName) {
+  if (!week || isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
+    throw new Error('[' + functionName + '] Invalid week parameter: ' + week + '. Must be between ' + MIN_WEEK + ' and ' + MAX_WEEK + '.');
   }
+}
 
-  var sections = [];
-  var completedWeek = null;
+function retryWithBackoff_(fn, maxRetries) {
+  maxRetries = maxRetries || 3;
+  var retries = 0;
 
-  for (var i = 0; i < leagues.length; i++) {
-    var snapshot = buildLeagueSnapshot_(leagues[i]);
-    sections.push(snapshot);
+  while (retries < maxRetries) {
+    try {
+      return fn();
+    } catch (err) {
+      retries++;
+      if (retries >= maxRetries) {
+        throw err;
+      }
 
-    if (completedWeek === null) {
-      // Infer completedWeek from the first league's snapshot week by calling getCurrentWeek_
-      var cw = getCurrentWeek_(leagues[i].league_key);
-      completedWeek = Math.max(1, cw - 1);
+      var backoffMs = Math.pow(2, retries) * 1000;
+      Logger.log('[retryWithBackoff_] Retry ' + retries + '/' + maxRetries + ' after error: ' + err.message + '. Waiting ' + backoffMs + 'ms...');
+      Utilities.sleep(backoffMs);
     }
   }
+}
 
-  var output = sections.join('\n\n');
-  Logger.log(output);
+function pullFantasyData() {
+  var startTime = Date.now();
+  API_CALL_COUNT = 0;
 
-  var subject = 'Yahoo Fantasy Snapshot';
-  if (completedWeek !== null) {
-    subject += ' - Week ' + completedWeek;
+  try {
+    var leagues = getAllLeagues_();
+    if (!leagues || !leagues.length) {
+      Logger.log('No leagues found for this Yahoo account.');
+      sendNotificationEmail_('Yahoo Fantasy Snapshot - No Leagues', 'No leagues found for this Yahoo account.');
+      return;
+    }
+
+    var sections = [];
+    var completedWeek = null;
+    var failedLeagues = [];
+
+    for (var i = 0; i < leagues.length; i++) {
+      try {
+        var snapshot = buildLeagueSnapshot_(leagues[i]);
+        sections.push(snapshot);
+
+        if (completedWeek === null) {
+          var cw = getCurrentWeek_(leagues[i].league_key);
+          completedWeek = Math.max(1, cw - 1);
+        }
+      } catch (err) {
+        Logger.log('[pullFantasyData] Failed to build snapshot for league ' + leagues[i].name + ': ' + err.message);
+        failedLeagues.push(leagues[i].name + ': ' + err.message);
+        sections.push('==== ' + leagues[i].name + ' (' + leagues[i].league_key + ') ====\n\nError: ' + err.message);
+      }
+    }
+
+    var output = sections.join('\n\n');
+
+    if (failedLeagues.length > 0) {
+      output += '\n\n========================================\n';
+      output += 'ERRORS:\n';
+      output += failedLeagues.join('\n');
+    }
+
+    Logger.log(output);
+
+    var subject = 'Yahoo Fantasy Snapshot';
+    if (completedWeek !== null) {
+      subject += ' - Week ' + completedWeek;
+    }
+
+    var endTime = Date.now();
+    var durationSec = ((endTime - startTime) / 1000).toFixed(2);
+    Logger.log('[pullFantasyData] Snapshot generation completed in ' + durationSec + 's. Total API calls: ' + API_CALL_COUNT);
+
+    sendSnapshotEmail_(subject, output);
+
+  } catch (err) {
+    var endTime = Date.now();
+    var durationSec = ((endTime - startTime) / 1000).toFixed(2);
+    Logger.log('[pullFantasyData] Critical error after ' + durationSec + 's and ' + API_CALL_COUNT + ' API calls: ' + err.message);
+    Logger.log('[pullFantasyData] Stack trace: ' + err.stack);
+
+    var errorMessage = 'Failed to generate fantasy snapshot.\n\n' +
+                       'Error: ' + err.message + '\n' +
+                       'Duration: ' + durationSec + 's\n' +
+                       'API Calls: ' + API_CALL_COUNT + '\n\n' +
+                       'Check the Apps Script logs for details:\n' +
+                       'https://script.google.com/';
+
+    sendNotificationEmail_('Fantasy Snapshot Error', errorMessage);
+  }
+}
+
+function sendSnapshotEmail_(subject, body) {
+  var recipientEmail = getRecipientEmail_();
+  var quotaRemaining = MailApp.getRemainingDailyQuota();
+
+  if (quotaRemaining <= 0) {
+    Logger.log('[sendSnapshotEmail_] Email quota exhausted (' + quotaRemaining + ' remaining). Cannot send snapshot.');
+    throw new Error('[sendSnapshotEmail_] Email quota exhausted (' + quotaRemaining + ' remaining). Snapshot not sent.');
   }
 
-  MailApp.sendEmail('hun@ghkim.com', subject, output);
+  Logger.log('[sendSnapshotEmail_] Sending email to ' + recipientEmail + '. Remaining daily quota: ' + quotaRemaining);
+  MailApp.sendEmail(recipientEmail, subject, body);
+}
+
+function sendNotificationEmail_(subject, body) {
+  try {
+    var recipientEmail = getRecipientEmail_();
+    var quotaRemaining = MailApp.getRemainingDailyQuota();
+
+    if (quotaRemaining <= 0) {
+      Logger.log('[sendNotificationEmail_] Email quota exhausted. Cannot send notification.');
+      return;
+    }
+
+    MailApp.sendEmail(recipientEmail, subject, body);
+  } catch (mailErr) {
+    Logger.log('[sendNotificationEmail_] Failed to send notification email: ' + mailErr.message);
+  }
 }
 
 function getYahooAuthUrl_() {
@@ -1274,12 +1390,31 @@ function getYahooAccessToken_() {
   var props = PropertiesService.getScriptProperties();
   var accessToken = props.getProperty('YAHOO_ACCESS_TOKEN');
   if (!accessToken) {
-    throw new Error('No Yahoo access token stored. Run startYahooAuth() and complete the OAuth flow.');
+    throw new Error('[getYahooAccessToken_] No Yahoo access token stored. Run startYahooAuth() and complete the OAuth flow.');
   }
+
+  // Check if token is expired or expiring soon based on stored metadata
+  var expiresIn = parseInt(props.getProperty('YAHOO_EXPIRES_IN') || '0', 10);
+  var createdAt = parseInt(props.getProperty('YAHOO_TOKEN_CREATED_AT') || '0', 10);
+
+  if (expiresIn > 0 && createdAt > 0) {
+    var expiresAt = createdAt + (expiresIn * 1000);
+    var now = Date.now();
+    var bufferMs = 5 * 60 * 1000; // 5 minute buffer
+
+    if (now >= (expiresAt - bufferMs)) {
+      Logger.log('[getYahooAccessToken_] Access token expired or expiring soon. Refreshing proactively.');
+      refreshYahooAccessToken_();
+      accessToken = props.getProperty('YAHOO_ACCESS_TOKEN');
+    }
+  }
+
   return accessToken;
 }
 
 function yahooApiRequest_(resourcePath, queryParams) {
+  API_CALL_COUNT++;
+
   var accessToken = getYahooAccessToken_();
   var baseUrl = 'https://fantasysports.yahooapis.com/fantasy/v2';
   var url = baseUrl + resourcePath;
@@ -1305,7 +1440,10 @@ function yahooApiRequest_(resourcePath, queryParams) {
       muteHttpExceptions: true
     };
 
-    var response = UrlFetchApp.fetch(url, options);
+    var response = retryWithBackoff_(function() {
+      return UrlFetchApp.fetch(url, options);
+    });
+
     return {
       status: response.getResponseCode(),
       body: response.getContentText()
@@ -1315,13 +1453,14 @@ function yahooApiRequest_(resourcePath, queryParams) {
   var first = doRequest(accessToken);
 
   if (first.status === 401 && first.body && first.body.indexOf('token_expired') !== -1) {
+    Logger.log('[yahooApiRequest_] Token expired, refreshing...');
     refreshYahooAccessToken_();
     accessToken = getYahooAccessToken_();
     first = doRequest(accessToken);
   }
 
   if (first.status < 200 || first.status >= 300) {
-    throw new Error('Yahoo API request failed. Status ' + first.status + ' Body: ' + first.body);
+    throw new Error('[yahooApiRequest_] HTTP ' + first.status + ': ' + first.body);
   }
 
   return first.body ? JSON.parse(first.body) : null;
