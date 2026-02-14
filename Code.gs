@@ -56,7 +56,7 @@ function supabaseRequest_(path, method, payload) {
 function getLeagueKey_() {
   var key = PropertiesService.getScriptProperties().getProperty('YAHOO_LEAGUE_KEY');
   if (!key) {
-    throw new Error('Missing YAHOO_LEAGUE_KEY script property.');
+    throw new Error('[getLeagueKey_] Missing YAHOO_LEAGUE_KEY script property.');
   }
   return key;
 }
@@ -137,6 +137,14 @@ function getAllLeagues_() {
   return leagues;
 }
 
+/**
+ * Debug helper: logs raw Yahoo API response for all leagues
+ *
+ * Use this to inspect the full API response structure when debugging
+ * parsing issues.
+ *
+ * @public
+ */
 function debugAllLeaguesRaw() {
   var data = yahooApiRequest_('/users;use_login=1/games;game_keys=nfl/leagues', {});
   Logger.log(JSON.stringify(data, null, 2));
@@ -447,7 +455,7 @@ function getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey) {
     return map;
   }
 
-  var chunkSize = 25;
+  var chunkSize = YAHOO_API_BATCH_SIZE;
   for (var i = 0; i < playerKeys.length; i += chunkSize) {
     var chunk = playerKeys.slice(i, i + chunkSize);
     var path = '/league/' + leagueKey + '/players;player_keys=' + chunk.join(',') + '/stats;type=week;week=' + week;
@@ -456,6 +464,11 @@ function getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey) {
     var leagueArr = fantasyContent && fantasyContent.league;
     if (!leagueArr || !leagueArr[1] || !leagueArr[1].players) {
       continue;
+    }
+
+    // Add delay between batches to respect rate limits
+    if (i + chunkSize < playerKeys.length) {
+      Utilities.sleep(RATE_LIMIT_DELAY_MS);
     }
 
     var playersContainer = leagueArr[1].players;
@@ -744,7 +757,7 @@ function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagu
   }
 
   var rows = [];
-  var chunkSize = 25;
+  var chunkSize = YAHOO_API_BATCH_SIZE;
 
   for (var i = 0; i < playerKeys.length; i += chunkSize) {
     var chunk = playerKeys.slice(i, i + chunkSize);
@@ -824,6 +837,11 @@ function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagu
         points: points
       });
     }
+
+    // Add delay between batches to respect rate limits
+    if (i + chunkSize < playerKeys.length) {
+      Utilities.sleep(RATE_LIMIT_DELAY_MS);
+    }
   }
 
   rows.sort(function (a, b) { return b.points - a.points; });
@@ -832,6 +850,17 @@ function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagu
 
 function getPlayerOwnerMap_(leagueKey) {
   leagueKey = leagueKey || getLeagueKey_();
+
+  // Check cache first
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'ownerMap_' + leagueKey;
+  var cached = cache.get(cacheKey);
+
+  if (cached) {
+    Logger.log('[getPlayerOwnerMap_] Using cached owner map for ' + leagueKey);
+    return JSON.parse(cached);
+  }
+
   var data = yahooApiRequest_('/league/' + leagueKey + '/teams;out=roster', {});
   var fantasyContent = data && data.fantasy_content;
   var leagueArr = fantasyContent && fantasyContent.league;
@@ -899,6 +928,9 @@ function getPlayerOwnerMap_(leagueKey) {
     }
   }
 
+  // Cache for 10 minutes (600 seconds)
+  cache.put(cacheKey, JSON.stringify(ownerMap), 600);
+
   return ownerMap;
 }
 
@@ -919,7 +951,7 @@ function getTopWaiverPickupsForWeek_(week, limit, leagueKey) {
   }
 
   var nowSec = Math.floor(Date.now() / 1000);
-  var windowSec = 7 * 24 * 60 * 60;
+  var windowSec = WAIVER_PICKUP_WINDOW_SEC;
   var startSec = nowSec - windowSec;
   var endSec = nowSec;
 
@@ -1085,7 +1117,16 @@ function buildLeagueSnapshot_(league) {
 
   try {
     var currentWeek = getCurrentWeek_(leagueKey);
-    completedWeek = Math.max(1, currentWeek - 1);
+
+    // Check if season has started (need at least week 2 for a completed week)
+    if (currentWeek < 2) {
+      Logger.log('[buildLeagueSnapshot_] Season has not yet started for ' + leagueName + ' (current week: ' + currentWeek + '). Skipping weekly highlights.');
+      lines.push('');
+      lines.push('Season has not yet started. Check back after Week 1.');
+      return lines.join('\n');
+    }
+
+    completedWeek = currentWeek - 1;
 
     lines.push('');
     lines.push('WEEK ' + completedWeek + ' HIGHLIGHTS');
@@ -1171,9 +1212,15 @@ function buildLeagueSnapshot_(league) {
   return lines.join('\n');
 }
 
+// Global constants
 var API_CALL_COUNT = 0;
 var MIN_WEEK = 1;
 var MAX_WEEK = 18;
+var YAHOO_API_BATCH_SIZE = 25; // Yahoo API player batch limit
+var WAIVER_PICKUP_WINDOW_DAYS = 7; // How far back to look for pickups
+var WAIVER_PICKUP_WINDOW_SEC = WAIVER_PICKUP_WINDOW_DAYS * 24 * 60 * 60;
+var TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh token 5 min before expiry
+var RATE_LIMIT_DELAY_MS = 200; // Delay between API batches
 
 function validateWeek_(week, functionName) {
   if (!week || isNaN(week) || week < MIN_WEEK || week > MAX_WEEK) {
@@ -1201,6 +1248,68 @@ function retryWithBackoff_(fn, maxRetries) {
   }
 }
 
+/**
+ * Debug helper: generates snapshot and logs to console instead of emailing
+ *
+ * Use this for development/testing to avoid email spam.
+ * Logs the full snapshot output and performance metrics.
+ *
+ * @public
+ */
+function debugSnapshotToLog() {
+  var startTime = Date.now();
+  API_CALL_COUNT = 0;
+
+  try {
+    var leagues = getAllLeagues_();
+    if (!leagues || !leagues.length) {
+      Logger.log('[debugSnapshotToLog] No leagues found for this Yahoo account.');
+      return;
+    }
+
+    var sections = [];
+    var completedWeek = null;
+
+    for (var i = 0; i < leagues.length; i++) {
+      try {
+        var snapshot = buildLeagueSnapshot_(leagues[i]);
+        sections.push(snapshot);
+
+        if (completedWeek === null) {
+          var cw = getCurrentWeek_(leagues[i].league_key);
+          completedWeek = Math.max(1, cw - 1);
+        }
+      } catch (err) {
+        Logger.log('[debugSnapshotToLog] Failed to build snapshot for league ' + leagues[i].name + ': ' + err.message);
+        sections.push('==== ' + leagues[i].name + ' (' + leagues[i].league_key + ') ====\n\nError: ' + err.message);
+      }
+    }
+
+    var output = sections.join('\n\n');
+    Logger.log('=== SNAPSHOT OUTPUT ===\n' + output);
+
+    var endTime = Date.now();
+    var durationSec = ((endTime - startTime) / 1000).toFixed(2);
+    Logger.log('[debugSnapshotToLog] Completed in ' + durationSec + 's. Total API calls: ' + API_CALL_COUNT);
+
+  } catch (err) {
+    Logger.log('[debugSnapshotToLog] Error: ' + err.message);
+    Logger.log('[debugSnapshotToLog] Stack trace: ' + err.stack);
+  }
+}
+
+/**
+ * Main entry point: fetches all leagues, builds weekly snapshots, and emails the result
+ *
+ * This function is designed to be run manually or on a time-driven trigger.
+ * It handles errors gracefully and sends email notifications on failure.
+ *
+ * Required Script Properties:
+ * - YAHOO_ACCESS_TOKEN, YAHOO_REFRESH_TOKEN, YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET
+ * - RECIPIENT_EMAIL
+ *
+ * @public
+ */
 function pullFantasyData() {
   var startTime = Date.now();
   API_CALL_COUNT = 0;
@@ -1325,12 +1434,31 @@ function getYahooAuthUrl_() {
   return 'https://api.login.yahoo.com/oauth2/request_auth?' + query;
 }
 
+/**
+ * Initiates Yahoo OAuth flow (run once in IDE to authorize)
+ *
+ * Logs the authorization URL to the console. Copy and paste this URL
+ * into a browser to complete the OAuth handshake.
+ *
+ * @public
+ * @returns {string} The Yahoo authorization URL
+ */
 function startYahooAuth() {
   var url = getYahooAuthUrl_();
   Logger.log('Open this URL in a browser to authorize Yahoo: ' + url);
   return url;
 }
 
+/**
+ * OAuth callback handler (Web App endpoint)
+ *
+ * This function is called automatically by Yahoo after the user authorizes
+ * the app. It exchanges the authorization code for access and refresh tokens.
+ *
+ * @public
+ * @param {Object} e - Event parameter with query string params
+ * @returns {HtmlOutput} Success or error message
+ */
 function doGet(e) {
   e = e || { parameter: {} };
   var params = e.parameter || {};
@@ -1400,7 +1528,7 @@ function getYahooAccessToken_() {
   if (expiresIn > 0 && createdAt > 0) {
     var expiresAt = createdAt + (expiresIn * 1000);
     var now = Date.now();
-    var bufferMs = 5 * 60 * 1000; // 5 minute buffer
+    var bufferMs = TOKEN_REFRESH_BUFFER_MS;
 
     if (now >= (expiresAt - bufferMs)) {
       Logger.log('[getYahooAccessToken_] Access token expired or expiring soon. Refreshing proactively.');
