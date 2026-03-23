@@ -7,18 +7,21 @@ Pulls your league standings, top performers, waiver pickups, and more — then e
 ## Features
 
 - **League Standings** with playoff clinch indicators
+- **Weekly Power Rankings** — 3-week rolling average with trend arrows
 - **Top 3 Highest Scoring Teams** for the week
 - **Biggest Blowouts** and "bad beat" of the week
 - **Most Points Left on the Bench** analysis
 - **Top Waiver Pickups** that were actually started
 - **Position Leaders** (QB, RB, WR, TE, K, DEF) with ownership info
+- **Matchup Projections** — projected scores, spread, and confidence %
+- **Season-Long Trends** — scoring trends, consistency, and luck factor (requires Supabase)
 - **Multi-league support** - tracks all your leagues automatically
 
 ## Tech Stack
 
 - **Runtime:** Google Apps Script (V8)
 - **API:** Yahoo Fantasy Sports API v2 (OAuth2)
-- **Data Persistence:** Supabase (planned for future)
+- **Data Persistence:** Supabase (optional — enables season-long trends)
 - **Delivery:** Email via MailApp
 
 ## Quick Start
@@ -37,25 +40,19 @@ Pulls your league standings, top performers, waiver pickups, and more — then e
 
 ## Example Output
 
-```
-==== My Fantasy League (nfl.l.12345) ====
+The weekly email is delivered as a styled HTML email with:
+- **League Standings** — color-coded table with rank, record, PF/PA, and playoff clinch indicators
+- **Season Trends** — scoring trend, consistency, luck factor (when Supabase has 3+ weeks of data)
+- **Power Rankings** — 3-week rolling average with green/red trend arrows and rank change
+- **Top 3 Highest Scoring Teams** — ranked by weekly points
+- **Biggest Blowouts** — winner/loser scores and margin
+- **Bad Beat of the Week** — closest loss highlighted in a yellow callout
+- **Most Points Left on Bench** — highlighted in a red callout
+- **Top Waiver Pickups** — best recent adds that were started
+- **Position Leaders** — top 3 per position (QB, RB, WR, TE, K, DEF) with ownership
+- **Matchup Projections** — projected scores, spread, and color-coded confidence %
 
-LEAGUE STANDINGS
-1. Team Alpha (John) (8-3-0) PF: 1245 PA: 1102
-2. Team Beta* (Jane) (7-4-0) PF: 1198 PA: 1156
-...
-
-WEEK 11 HIGHLIGHTS
-
-Top 3 Highest Scoring Teams
-1. Team Alpha (John) – 156.3 pts
-2. Team Gamma (Bob) – 142.8 pts
-3. Team Delta (Alice) – 138.5 pts
-
-Top Waiver Pickups (Week 11)
-1. Jayden Reed - 22.4 pts (Team Alpha, added Tue)
-...
-```
+A plain text fallback is included for email clients that don't support HTML.
 
 ## Documentation
 
@@ -64,14 +61,15 @@ Top Waiver Pickups (Week 11)
 
 ## Project Status
 
-**Current Version:** v1.0 (Initial release)
-**Code Health:** ⚠️ Fair - Core functionality works, production hardening in progress
+**Current Version:** v1.4
+**Code Health:** ✅ Very Good (85/100) - Production-ready with power rankings, matchup projections, and optional Supabase persistence
 **Active Development:** Yes
 
-### Recent Audit Findings (2026-02-09)
-- 🔴 2 Critical issues identified
-- 🟠 8 High priority improvements needed
-- See [latest audit](docs/audits/2026-02-09-audit.md) for details
+### Recent Audit Findings (2026-02-19)
+- 🔴 0 Critical issues
+- 🟠 0 High priority items
+- 🟡 4 Medium priority items remaining
+- See [latest audit](docs/audits/2026-02-19-audit.md) for details
 
 ## Contributing
 
