@@ -1,3 +1,16 @@
+// ─── Global Constants ────────────────────────────────────────────────────────
+var API_CALL_COUNT = 0;
+var MIN_WEEK = 1;
+var MAX_WEEK = 18;
+var YAHOO_API_BATCH_SIZE = 25;        // Yahoo API player batch limit
+var WAIVER_PICKUP_WINDOW_DAYS = 7;    // How far back to look for waiver pickups
+var WAIVER_PICKUP_WINDOW_SEC = WAIVER_PICKUP_WINDOW_DAYS * 24 * 60 * 60;
+var TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh token 5 min before expiry
+var RATE_LIMIT_DELAY_MS = 200;        // Delay between API batches
+var POWER_RANKING_WINDOW = 3;         // Rolling weeks for power rankings
+var SLOW_RUN_THRESHOLD_SEC = 240;     // Alert if execution exceeds 4 minutes
+// ─────────────────────────────────────────────────────────────────────────────
+
 function getConfig_() {
   var props = PropertiesService.getScriptProperties();
   return {
@@ -63,6 +76,29 @@ function supabaseRequest_(path, method, payload) {
 function isSupabaseConfigured_() {
   var cfg = getConfig_();
   return !!(cfg.supabaseUrl && cfg.supabaseAnonKey);
+}
+
+/**
+ * Verifies that the required Supabase table exists and is accessible.
+ * Run this manually after setting up Supabase credentials to confirm the schema is in place.
+ * Also called at the start of pullFantasyData() when Supabase is configured.
+ *
+ * @returns {boolean} true if the table is accessible, false otherwise
+ */
+function verifySupabaseSchema_() {
+  if (!isSupabaseConfigured_()) {
+    Logger.log('[verifySupabaseSchema_] Supabase not configured — skipping.');
+    return false;
+  }
+  try {
+    supabaseRequest_('/rest/v1/weekly_snapshots?limit=1', 'get');
+    Logger.log('[verifySupabaseSchema_] weekly_snapshots table is accessible.');
+    return true;
+  } catch (err) {
+    Logger.log('[verifySupabaseSchema_] Cannot access weekly_snapshots table: ' + err.message +
+      '\nEnsure you have run the SQL schema creation from CLAUDE.md and that RLS policies are set.');
+    return false;
+  }
 }
 
 /**
@@ -543,18 +579,40 @@ function getWeekMatchups_(week, leagueKey) {
   return results;
 }
 
-function getWeekTeamHighlights_(week, leagueKey) {
-  validateWeek_(week, 'getWeekTeamHighlights_');
-  leagueKey = leagueKey || getLeagueKey_();
+/**
+ * Fetches the matchups container for a given week from the Yahoo scoreboard API.
+ * Shared by getWeekTeamScores_, getWeekTeamHighlights_, and getWeeklyPowerRankings_
+ * so callers can pass the result through and avoid duplicate API calls.
+ *
+ * @param {number} week - NFL week number (1-18)
+ * @param {string} leagueKey - League key
+ * @returns {Object} matchupsContainer (the `matchups` object from Yahoo scoreboard)
+ */
+function fetchWeekScoreboard_(week, leagueKey) {
   var data = yahooApiRequest_('/league/' + leagueKey + '/scoreboard;week=' + week, {});
   var fantasyContent = data && data.fantasy_content;
   var leagueArr = fantasyContent && fantasyContent.league;
   if (!leagueArr || !leagueArr[1] || !leagueArr[1].scoreboard) {
-    throw new Error('Unexpected scoreboard response structure from Yahoo.');
+    throw new Error('[fetchWeekScoreboard_] Unexpected scoreboard response from Yahoo for week ' + week + '.');
   }
+  return leagueArr[1].scoreboard[0].matchups;
+}
 
-  var scoreboard = leagueArr[1].scoreboard[0];
-  var matchupsContainer = scoreboard.matchups;
+/**
+ * Returns top-scoring teams, biggest blowouts, and the closest loss (bad beat) for a week.
+ *
+ * Yahoo API response shape: same as getWeekMatchups_ (scoreboard endpoint).
+ * Uses team_points (actual scores) rather than projected points.
+ *
+ * @param {number} week - NFL week number (1-18)
+ * @param {string} [leagueKey] - League key (defaults to YAHOO_LEAGUE_KEY property)
+ * @param {Object} [matchupsData] - Pre-fetched matchupsContainer from fetchWeekScoreboard_() to avoid duplicate API call
+ * @returns {{ topTeams: Array, blowouts: Array, badBeat: Object|null }}
+ */
+function getWeekTeamHighlights_(week, leagueKey, matchupsData) {
+  validateWeek_(week, 'getWeekTeamHighlights_');
+  leagueKey = leagueKey || getLeagueKey_();
+  var matchupsContainer = matchupsData || fetchWeekScoreboard_(week, leagueKey);
   var matchupCount = matchupsContainer.count;
 
   var teams = [];
@@ -627,18 +685,10 @@ function getWeekTeamHighlights_(week, leagueKey) {
  * @param {string} [leagueKey] - League key (defaults to YAHOO_LEAGUE_KEY property)
  * @returns {Array<{team_name: string, manager_name: string, points: number}>}
  */
-function getWeekTeamScores_(week, leagueKey) {
+function getWeekTeamScores_(week, leagueKey, matchupsData) {
   validateWeek_(week, 'getWeekTeamScores_');
   leagueKey = leagueKey || getLeagueKey_();
-  var data = yahooApiRequest_('/league/' + leagueKey + '/scoreboard;week=' + week, {});
-  var fantasyContent = data && data.fantasy_content;
-  var leagueArr = fantasyContent && fantasyContent.league;
-  if (!leagueArr || !leagueArr[1] || !leagueArr[1].scoreboard) {
-    throw new Error('[getWeekTeamScores_] Unexpected scoreboard response structure from Yahoo.');
-  }
-
-  var scoreboard = leagueArr[1].scoreboard[0];
-  var matchupsContainer = scoreboard.matchups;
+  var matchupsContainer = matchupsData || fetchWeekScoreboard_(week, leagueKey);
   var matchupCount = matchupsContainer.count;
   var teams = [];
 
@@ -676,23 +726,24 @@ function getWeekTeamScores_(week, leagueKey) {
  * @returns {Array<{team_name: string, manager_name: string, avg_points: number,
  *   this_week_points: number, current_rank: number, prev_rank: number|null, trend: string}>}
  */
-function getWeeklyPowerRankings_(completedWeek, leagueKey) {
+function getWeeklyPowerRankings_(completedWeek, leagueKey, currentWeekScores) {
   validateWeek_(completedWeek, 'getWeeklyPowerRankings_');
   leagueKey = leagueKey || getLeagueKey_();
 
-  var POWER_RANKING_WINDOW = 3;
   var startWeek = Math.max(MIN_WEEK, completedWeek - POWER_RANKING_WINDOW + 1);
   var weeksToFetch = [];
   for (var w = startWeek; w <= completedWeek; w++) {
     weeksToFetch.push(w);
   }
 
-  // Fetch scores for each week in the window
+  // Fetch scores for each week in the window (reuse pre-fetched scores for completedWeek if provided)
   var scoresByTeam = {};
 
   for (var i = 0; i < weeksToFetch.length; i++) {
-    var weekScores = getWeekTeamScores_(weeksToFetch[i], leagueKey);
-    if (i < weeksToFetch.length - 1) {
+    var weekScores = (weeksToFetch[i] === completedWeek && currentWeekScores)
+      ? currentWeekScores
+      : getWeekTeamScores_(weeksToFetch[i], leagueKey);
+    if (i < weeksToFetch.length - 1 && !(weeksToFetch[i] === completedWeek && currentWeekScores)) {
       Utilities.sleep(RATE_LIMIT_DELAY_MS);
     }
 
@@ -819,17 +870,43 @@ function getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey) {
   return map;
 }
 
-function getWeekBenchSummary_(week, leagueKey) {
-  validateWeek_(week, 'getWeekBenchSummary_');
-  leagueKey = leagueKey || getLeagueKey_();
+/**
+ * Fetches the teams+roster container for a given week from the Yahoo API.
+ * Shared by getWeekBenchSummary_ and getWeekStartedPlayerKeys_ so callers
+ * can pass the result to both and avoid a duplicate API call.
+ *
+ * @param {number} week - NFL week number (1-18)
+ * @param {string} leagueKey - League key
+ * @returns {Object} teamsContainer (the `teams` object from Yahoo API)
+ */
+function fetchWeekRosterTeams_(week, leagueKey) {
   var data = yahooApiRequest_('/league/' + leagueKey + '/teams;week=' + week + ';out=roster', {});
   var fantasyContent = data && data.fantasy_content;
   var leagueArr = fantasyContent && fantasyContent.league;
   if (!leagueArr || !leagueArr[1] || !leagueArr[1].teams) {
-    throw new Error('Unexpected teams/roster response structure from Yahoo for bench summary.');
+    throw new Error('[fetchWeekRosterTeams_] Unexpected teams/roster response from Yahoo for week ' + week + '.');
   }
+  return leagueArr[1].teams;
+}
 
-  var teamsContainer = leagueArr[1].teams;
+/**
+ * Returns the team with the most total points left on the bench for a given week.
+ *
+ * Yahoo API response shape (teams;out=roster endpoint):
+ *   { fantasy_content: { league: [ {...}, { teams: { count: N,
+ *       "0": { team: [ [{name, team_id, ...}], { roster: { "0": { players: {
+ *           count: N, "0": { player: [ [{player_key, name, ...}], ..., { selected_position: [{position: "BN"}] } ] }
+ *       } } } } ] } } } ] } }
+ *
+ * @param {number} week - NFL week number (1-18)
+ * @param {string} [leagueKey] - League key (defaults to YAHOO_LEAGUE_KEY property)
+ * @param {Object} [rosterTeams] - Pre-fetched teamsContainer from fetchWeekRosterTeams_() to avoid duplicate API call
+ * @returns {{ team_name: string, totalPoints: number, topBench: Array }|null}
+ */
+function getWeekBenchSummary_(week, leagueKey, rosterTeams) {
+  validateWeek_(week, 'getWeekBenchSummary_');
+  leagueKey = leagueKey || getLeagueKey_();
+  var teamsContainer = rosterTeams || fetchWeekRosterTeams_(week, leagueKey);
   var teamCount = teamsContainer.count;
 
   var benchByTeam = [];
@@ -935,17 +1012,21 @@ function getWeekBenchSummary_(week, leagueKey) {
   return best;
 }
 
-function getWeekStartedPlayerKeys_(week, leagueKey) {
+/**
+ * Returns a map of player_key → true for all non-bench starters for a given week.
+ * Used by getTopWaiverPickupsForWeek_ to filter pickups to only those who were started.
+ *
+ * Yahoo API response shape: same as getWeekBenchSummary_ (teams;out=roster endpoint).
+ *
+ * @param {number} week - NFL week number (1-18)
+ * @param {string} [leagueKey] - League key (defaults to YAHOO_LEAGUE_KEY property)
+ * @param {Object} [rosterTeams] - Pre-fetched teamsContainer from fetchWeekRosterTeams_() to avoid duplicate API call
+ * @returns {Object} Map of player_key → true for all started players
+ */
+function getWeekStartedPlayerKeys_(week, leagueKey, rosterTeams) {
   validateWeek_(week, 'getWeekStartedPlayerKeys_');
   leagueKey = leagueKey || getLeagueKey_();
-  var data = yahooApiRequest_('/league/' + leagueKey + '/teams;week=' + week + ';out=roster', {});
-  var fantasyContent = data && data.fantasy_content;
-  var leagueArr = fantasyContent && fantasyContent.league;
-  if (!leagueArr || !leagueArr[1] || !leagueArr[1].teams) {
-    throw new Error('Unexpected teams/roster response structure from Yahoo for started players.');
-  }
-
-  var teamsContainer = leagueArr[1].teams;
+  var teamsContainer = rosterTeams || fetchWeekRosterTeams_(week, leagueKey);
   var teamCount = teamsContainer.count;
   var started = {};
 
@@ -1135,7 +1216,7 @@ function getPlayerOwnerMap_(leagueKey) {
   return ownerMap;
 }
 
-function getTopWaiverPickupsForWeek_(week, limit, leagueKey) {
+function getTopWaiverPickupsForWeek_(week, limit, leagueKey, rosterTeams) {
   validateWeek_(week, 'getTopWaiverPickupsForWeek_');
   leagueKey = leagueKey || getLeagueKey_();
   var data = yahooApiRequest_('/league/' + leagueKey + '/transactions', {});
@@ -1233,7 +1314,7 @@ function getTopWaiverPickupsForWeek_(week, limit, leagueKey) {
     return [];
   }
 
-  var startedKeys = getWeekStartedPlayerKeys_(week, leagueKey);
+  var startedKeys = getWeekStartedPlayerKeys_(week, leagueKey, rosterTeams);
   var startedAdds = [];
   var keysForPoints = [];
 
@@ -1280,7 +1361,7 @@ function buildLeagueSnapshot_(league) {
 
   var rows = getLeagueStandings_(leagueKey);
   if (!rows || !rows.length) {
-    return '<p>No standings data to display for ' + leagueName + ' (' + leagueKey + ').</p>';
+    return '<p>No standings data to display for ' + escapeHtml_(leagueName) + ' (' + escapeHtml_(leagueKey) + ').</p>';
   }
 
   var h = [];
@@ -1289,7 +1370,7 @@ function buildLeagueSnapshot_(league) {
   var tdStyle = 'style="border:1px solid #ddd;padding:5px 10px;"';
   var sectionTitle = 'style="color:#2c3e50;margin:16px 0 8px 0;font-size:16px;"';
 
-  h.push('<h2 style="color:#2c3e50;border-bottom:2px solid #3498db;padding-bottom:6px;">' + leagueName + '</h2>');
+  h.push('<h2 style="color:#2c3e50;border-bottom:2px solid #3498db;padding-bottom:6px;">' + escapeHtml_(leagueName) + '</h2>');
 
   // Standings table
   h.push('<h3 ' + sectionTitle + '>League Standings</h3>');
@@ -1305,8 +1386,8 @@ function buildLeagueSnapshot_(league) {
 
     h.push('<tr' + rowBg + '>');
     h.push('<td ' + tdStyle + '>' + r.rank + '</td>');
-    h.push('<td ' + tdStyle + '><strong>' + r.team_name + star + '</strong></td>');
-    h.push('<td ' + tdStyle + '>' + (r.manager_name || '') + '</td>');
+    h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(r.team_name) + star + '</strong></td>');
+    h.push('<td ' + tdStyle + '>' + escapeHtml_(r.manager_name || '') + '</td>');
     h.push('<td ' + tdStyle + '>' + record + '</td>');
     h.push('<td ' + tdStyle + '>' + pf + '</td>');
     h.push('<td ' + tdStyle + '>' + pa + '</td>');
@@ -1314,7 +1395,38 @@ function buildLeagueSnapshot_(league) {
   });
   h.push('</table>');
 
-  // Season-Long Trends (requires Supabase with 3+ weeks of data)
+  // Determine current/completed week and persist the completed week BEFORE fetching
+  // Season Trends, so the trends table includes the most recent completed week.
+  var currentWeek = null;
+  var completedWeek = null;
+  var sharedScoreboard = null;
+  var sharedWeekScores = null;
+  try {
+    currentWeek = getCurrentWeek_(leagueKey);
+    if (currentWeek >= 2) {
+      completedWeek = currentWeek - 1;
+      try {
+        sharedScoreboard = fetchWeekScoreboard_(completedWeek, leagueKey);
+        sharedWeekScores = getWeekTeamScores_(completedWeek, leagueKey, sharedScoreboard);
+      } catch (sbErr) {
+        Logger.log('[buildLeagueSnapshot_] Scoreboard fetch failed: ' + sbErr.message);
+      }
+      if (isSupabaseConfigured_() && sharedWeekScores) {
+        try {
+          var weeklyScoreMap = {};
+          sharedWeekScores.forEach(function (t) { weeklyScoreMap[t.team_name] = t.points; });
+          persistWeeklySnapshot_(leagueKey, completedWeek, rows, weeklyScoreMap);
+        } catch (persistErr) {
+          Logger.log('[buildLeagueSnapshot_] Supabase persistence failed: ' + persistErr.message);
+        }
+      }
+    }
+  } catch (weekErr) {
+    Logger.log('[buildLeagueSnapshot_] Current week lookup failed: ' + weekErr.message);
+  }
+
+  // Season-Long Trends (requires Supabase with 3+ weeks of data).
+  // Runs AFTER persistWeeklySnapshot_ above so trends include the current completed week.
   try {
     var seasonTrends = getSeasonTrends_(leagueKey);
     if (seasonTrends && seasonTrends.length) {
@@ -1330,7 +1442,7 @@ function buildLeagueSnapshot_(league) {
                       : t.luck_factor < 0 ? '<span style="color:#e74c3c;">' + t.luck_factor + ' Unlucky</span>'
                       : '<span style="color:#999;">Even</span>';
         h.push('<tr' + rowBg + '>');
-        h.push('<td ' + tdStyle + '><strong>' + t.team_name + '</strong></td>');
+        h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(t.team_name) + '</strong></td>');
         h.push('<td ' + tdStyle + '>' + trendIcon + '</td>');
         h.push('<td ' + tdStyle + '>' + t.avg_weekly_score.toFixed(1) + '</td>');
         h.push('<td ' + tdStyle + '>' + t.consistency_rating + ' (' + t.std_dev.toFixed(1) + ')</td>');
@@ -1344,24 +1456,18 @@ function buildLeagueSnapshot_(league) {
     Logger.log('[buildLeagueSnapshot_] Season trends failed: ' + trendErr.message);
   }
 
-  var completedWeek = null;
-
   try {
-    var currentWeek = getCurrentWeek_(leagueKey);
-
-    if (currentWeek < 2) {
+    if (currentWeek === null || currentWeek < 2) {
       Logger.log('[buildLeagueSnapshot_] Season has not yet started for ' + leagueName + ' (current week: ' + currentWeek + '). Skipping weekly highlights.');
       h.push('<p><em>Season has not yet started. Check back after Week 1.</em></p>');
       return h.join('');
     }
 
-    completedWeek = currentWeek - 1;
-
     h.push('<h3 ' + sectionTitle + '>Week ' + completedWeek + ' Highlights</h3>');
 
-    // Power Rankings
+    // Power Rankings (passes pre-fetched completedWeek scores to avoid a redundant scoreboard fetch)
     try {
-      var powerRankings = getWeeklyPowerRankings_(completedWeek, leagueKey);
+      var powerRankings = getWeeklyPowerRankings_(completedWeek, leagueKey, sharedWeekScores);
       if (powerRankings && powerRankings.length) {
         var windowSize = Math.min(3, completedWeek);
         h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Power Rankings (Last ' + windowSize + ' Week' + (windowSize > 1 ? 's' : '') + ' Avg)</h4>');
@@ -1377,11 +1483,11 @@ function buildLeagueSnapshot_(league) {
             var diff = Math.abs(r.prev_rank - r.current_rank);
             trendDetail = ' <span style="font-size:11px;color:#888;">(' + (r.trend === 'up' ? '+' : '-') + diff + ')</span>';
           }
-          var owner = r.manager_name ? ' (' + r.manager_name + ')' : '';
+          var owner = r.manager_name ? ' (' + escapeHtml_(r.manager_name) + ')' : '';
           h.push('<tr' + rowBg + '>');
           h.push('<td ' + tdStyle + '>' + r.current_rank + '</td>');
           h.push('<td ' + tdStyle + ' style="text-align:center;">' + trendArrow + trendDetail + '</td>');
-          h.push('<td ' + tdStyle + '><strong>' + r.team_name + '</strong>' + owner + '</td>');
+          h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(r.team_name) + '</strong>' + owner + '</td>');
           h.push('<td ' + tdStyle + '>' + r.avg_points.toFixed(1) + '</td>');
           h.push('<td ' + tdStyle + '>' + r.this_week_points.toFixed(1) + '</td>');
           h.push('</tr>');
@@ -1392,7 +1498,7 @@ function buildLeagueSnapshot_(league) {
       Logger.log('[buildLeagueSnapshot_] Power rankings failed: ' + prErr.message);
     }
 
-    var highlights = getWeekTeamHighlights_(completedWeek, leagueKey);
+    var highlights = getWeekTeamHighlights_(completedWeek, leagueKey, sharedScoreboard);
     var ownerMap = getPlayerOwnerMap_(leagueKey);
 
     // Top 3 Highest Scoring Teams
@@ -1401,9 +1507,9 @@ function buildLeagueSnapshot_(league) {
       h.push('<table ' + ts + '>');
       h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Team</th><th ' + thStyle + '>Points</th></tr>');
       highlights.topTeams.forEach(function (t, idx) {
-        var owner = t.manager_name ? ' (' + t.manager_name + ')' : '';
+        var owner = t.manager_name ? ' (' + escapeHtml_(t.manager_name) + ')' : '';
         var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '><strong>' + t.team_name + '</strong>' + owner + '</td><td ' + tdStyle + '>' + t.points.toFixed(1) + '</td></tr>');
+        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '><strong>' + escapeHtml_(t.team_name) + '</strong>' + owner + '</td><td ' + tdStyle + '>' + t.points.toFixed(1) + '</td></tr>');
       });
       h.push('</table>');
     }
@@ -1415,7 +1521,7 @@ function buildLeagueSnapshot_(league) {
       h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Winner</th><th ' + thStyle + '>Score</th><th ' + thStyle + '>Loser</th><th ' + thStyle + '>Margin</th></tr>');
       highlights.blowouts.forEach(function (m, idx) {
         var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + m.winner.team_name + '</td><td ' + tdStyle + '>' + m.winner.points.toFixed(1) + ' - ' + m.loser.points.toFixed(1) + '</td><td ' + tdStyle + '>' + m.loser.team_name + '</td><td ' + tdStyle + '>+' + m.margin.toFixed(1) + '</td></tr>');
+        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(m.winner.team_name) + '</td><td ' + tdStyle + '>' + m.winner.points.toFixed(1) + ' - ' + m.loser.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(m.loser.team_name) + '</td><td ' + tdStyle + '>+' + m.margin.toFixed(1) + '</td></tr>');
       });
       h.push('</table>');
     }
@@ -1425,34 +1531,42 @@ function buildLeagueSnapshot_(league) {
       var bb = highlights.badBeat;
       h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Bad Beat of the Week</h4>');
       h.push('<p style="margin:4px 0;padding:8px 12px;background:#fff3cd;border-left:4px solid #ffc107;font-size:14px;">' +
-        '<strong>' + bb.loser.team_name + '</strong> lost to <strong>' + bb.winner.team_name + '</strong> ' +
+        '<strong>' + escapeHtml_(bb.loser.team_name) + '</strong> lost to <strong>' + escapeHtml_(bb.winner.team_name) + '</strong> ' +
         bb.loser.points.toFixed(1) + ' to ' + bb.winner.points.toFixed(1) + ' (-' + bb.margin.toFixed(1) + ')</p>');
     }
 
+    // Fetch roster data once — shared by bench summary and waiver pickups
+    var sharedRosterTeams = null;
+    try {
+      sharedRosterTeams = fetchWeekRosterTeams_(completedWeek, leagueKey);
+    } catch (rosterErr) {
+      Logger.log('[buildLeagueSnapshot_] Roster fetch failed: ' + rosterErr.message);
+    }
+
     // Bench Points
-    var benchSummary = getWeekBenchSummary_(completedWeek, leagueKey);
+    var benchSummary = getWeekBenchSummary_(completedWeek, leagueKey, sharedRosterTeams);
     if (benchSummary) {
       h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Most Points Left on the Bench</h4>');
       var detail = '';
       if (benchSummary.topBench && benchSummary.topBench.length) {
         detail = benchSummary.topBench.map(function (bp) {
-          return bp.name + ' ' + bp.points.toFixed(1);
+          return escapeHtml_(bp.name) + ' ' + bp.points.toFixed(1);
         }).join(', ');
       }
       h.push('<p style="margin:4px 0;padding:8px 12px;background:#f8d7da;border-left:4px solid #dc3545;font-size:14px;">' +
-        '<strong>' + benchSummary.team_name + '</strong> &mdash; ' + benchSummary.totalPoints.toFixed(1) + ' pts on bench' +
+        '<strong>' + escapeHtml_(benchSummary.team_name) + '</strong> &mdash; ' + benchSummary.totalPoints.toFixed(1) + ' pts on bench' +
         (detail ? ' (' + detail + ')' : '') + '</p>');
     }
 
-    // Waiver Pickups
-    var waiverPickups = getTopWaiverPickupsForWeek_(completedWeek, 3, leagueKey);
+    // Waiver Pickups (passes shared roster data to avoid a second roster fetch)
+    var waiverPickups = getTopWaiverPickupsForWeek_(completedWeek, 3, leagueKey, sharedRosterTeams);
     if (waiverPickups && waiverPickups.length) {
       h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Top Waiver Pickups (Week ' + completedWeek + ')</h4>');
       h.push('<table ' + ts + '>');
       h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Player</th><th ' + thStyle + '>Points</th><th ' + thStyle + '>Team</th><th ' + thStyle + '>Added</th></tr>');
       waiverPickups.forEach(function (w, idx) {
         var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + w.player_name + '</td><td ' + tdStyle + '>' + w.points.toFixed(1) + '</td><td ' + tdStyle + '>' + w.team_name + '</td><td ' + tdStyle + '>' + (w.addedDay || '') + '</td></tr>');
+        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(w.player_name) + '</td><td ' + tdStyle + '>' + w.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(w.team_name) + '</td><td ' + tdStyle + '>' + (w.addedDay || '') + '</td></tr>');
       });
       h.push('</table>');
     }
@@ -1471,7 +1585,7 @@ function buildLeagueSnapshot_(league) {
       topPlayers.forEach(function (p, idx) {
         var owner = p.owner && p.owner !== 'FA' ? p.owner : 'FA';
         var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + p.name + '</td><td ' + tdStyle + '>' + p.points.toFixed(1) + '</td><td ' + tdStyle + '>' + owner + '</td></tr>');
+        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(p.name) + '</td><td ' + tdStyle + '>' + p.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(owner) + '</td></tr>');
       });
       h.push('</table>');
     });
@@ -1487,7 +1601,7 @@ function buildLeagueSnapshot_(league) {
           var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
           var confColor = m.favored_percent >= 65 ? '#27ae60' : (m.favored_percent >= 55 ? '#f39c12' : '#e74c3c');
           h.push('<tr' + rowBg + '>');
-          h.push('<td ' + tdStyle + '><strong>' + m.favored.team_name + '</strong> vs ' + m.underdog.team_name + '</td>');
+          h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(m.favored.team_name) + '</strong> vs ' + escapeHtml_(m.underdog.team_name) + '</td>');
           h.push('<td ' + tdStyle + '>' + m.favored.points.toFixed(1) + ' - ' + m.underdog.points.toFixed(1) + '</td>');
           h.push('<td ' + tdStyle + '>-' + m.margin.toFixed(1) + '</td>');
           h.push('<td ' + tdStyle + '><span style="color:' + confColor + ';font-weight:bold;">' + m.favored_percent + '%</span></td>');
@@ -1500,21 +1614,26 @@ function buildLeagueSnapshot_(league) {
     }
 
   } catch (err) {
-    h.push('<p style="color:#dc3545;"><strong>Error:</strong> ' + err.message + '</p>');
+    h.push('<p style="color:#dc3545;"><strong>Error:</strong> ' + escapeHtml_(err.message) + '</p>');
   }
 
   return h.join('');
 }
 
-// Global constants
-var API_CALL_COUNT = 0;
-var MIN_WEEK = 1;
-var MAX_WEEK = 18;
-var YAHOO_API_BATCH_SIZE = 25; // Yahoo API player batch limit
-var WAIVER_PICKUP_WINDOW_DAYS = 7; // How far back to look for pickups
-var WAIVER_PICKUP_WINDOW_SEC = WAIVER_PICKUP_WINDOW_DAYS * 24 * 60 * 60;
-var TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh token 5 min before expiry
-var RATE_LIMIT_DELAY_MS = 200; // Delay between API batches
+/**
+ * Escapes HTML special characters to prevent injection in email output.
+ * Use on all user-sourced or API-sourced strings before inserting into HTML.
+ * @param {*} str - Value to escape (coerced to string)
+ * @returns {string}
+ */
+function escapeHtml_(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 /**
  * Flattens Yahoo's array-of-single-key-objects into a plain object.
@@ -1659,7 +1778,7 @@ function debugSnapshotToLog() {
         }
       } catch (err) {
         Logger.log('[debugSnapshotToLog] Failed to build snapshot for league ' + leagues[i].name + ': ' + err.message);
-        sections.push('<h2>' + leagues[i].name + ' (' + leagues[i].league_key + ')</h2><p>Error: ' + err.message + '</p>');
+        sections.push('<h2>' + escapeHtml_(leagues[i].name) + ' (' + escapeHtml_(leagues[i].league_key) + ')</h2><p>Error: ' + escapeHtml_(err.message) + '</p>');
       }
     }
 
@@ -1695,6 +1814,13 @@ function pullFantasyData() {
   API_CALL_COUNT = 0;
 
   try {
+    if (isSupabaseConfigured_() && !verifySupabaseSchema_()) {
+      sendNotificationEmail_('Fantasy Snapshot - Supabase Schema Missing',
+        'Supabase is configured but the weekly_snapshots table is not accessible.\n' +
+        'Season trends and persistence will be skipped until the schema is created.\n\n' +
+        'See CLAUDE.md for the SQL schema creation steps.');
+    }
+
     var leagues = getAllLeagues_();
     if (!leagues || !leagues.length) {
       Logger.log('No leagues found for this Yahoo account.');
@@ -1716,22 +1842,10 @@ function pullFantasyData() {
           completedWeek = Math.max(1, cw - 1);
         }
 
-        // Persist to Supabase (non-blocking, errors logged but not thrown)
-        if (completedWeek !== null && isSupabaseConfigured_()) {
-          try {
-            var standingsForPersist = getLeagueStandings_(leagues[i].league_key);
-            var weekScores = getWeekTeamScores_(completedWeek, leagues[i].league_key);
-            var weeklyScoreMap = {};
-            weekScores.forEach(function (t) { weeklyScoreMap[t.team_name] = t.points; });
-            persistWeeklySnapshot_(leagues[i].league_key, completedWeek, standingsForPersist, weeklyScoreMap);
-          } catch (persistErr) {
-            Logger.log('[pullFantasyData] Supabase persistence failed for ' + leagues[i].name + ': ' + persistErr.message);
-          }
-        }
       } catch (err) {
         Logger.log('[pullFantasyData] Failed to build snapshot for league ' + leagues[i].name + ': ' + err.message);
-        failedLeagues.push(leagues[i].name + ': ' + err.message);
-        sections.push('<h2 style="color:#dc3545;">' + leagues[i].name + ' (' + leagues[i].league_key + ')</h2><p>Error: ' + err.message + '</p>');
+        failedLeagues.push(escapeHtml_(leagues[i].name) + ': ' + escapeHtml_(err.message));
+        sections.push('<h2 style="color:#dc3545;">' + escapeHtml_(leagues[i].name) + ' (' + escapeHtml_(leagues[i].league_key) + ')</h2><p>Error: ' + escapeHtml_(err.message) + '</p>');
       }
     }
 
@@ -1760,6 +1874,12 @@ function pullFantasyData() {
     endTime = Date.now();
     durationSec = ((endTime - startTime) / 1000).toFixed(2);
     Logger.log('[pullFantasyData] Snapshot generation completed in ' + durationSec + 's. Total API calls: ' + API_CALL_COUNT);
+
+    if (parseFloat(durationSec) > SLOW_RUN_THRESHOLD_SEC) {
+      sendNotificationEmail_('Fantasy Snapshot - Slow Run Warning',
+        'Snapshot took ' + durationSec + 's — approaching the 6-minute GAS execution limit.\n' +
+        'API calls: ' + API_CALL_COUNT + '\n\nConsider reducing POWER_RANKING_WINDOW or the number of leagues.');
+    }
 
     sendSnapshotEmail_(subject, htmlBody);
 
@@ -1888,7 +2008,7 @@ function doGet(e) {
   e = e || { parameter: {} };
   var params = e.parameter || {};
 
-  if (params.code) {
+  if (params.code && params.code.length > 10) {
     var cfg = getConfig_();
     var redirectUri = PropertiesService.getScriptProperties().getProperty('YAHOO_REDIRECT_URI');
     var tokenUrl = 'https://api.login.yahoo.com/oauth2/get_token';
@@ -2066,3 +2186,107 @@ function refreshYahooAccessToken_() {
     props.setProperty('YAHOO_TOKEN_CREATED_AT', String(Date.now()));
   }
 }
+
+// ─── Unit Tests ───────────────────────────────────────────────────────────────
+/**
+ * Runs basic unit tests on pure utility functions.
+ * Run this manually from the Apps Script IDE to verify core logic.
+ * All results are logged — look for PASS/FAIL in the Execution Log.
+ *
+ * @public
+ */
+function runTests() {
+  var passed = 0;
+  var failed = 0;
+
+  function assert(description, actual, expected) {
+    if (actual === expected) {
+      Logger.log('PASS: ' + description);
+      passed++;
+    } else {
+      Logger.log('FAIL: ' + description + ' | expected: ' + JSON.stringify(expected) + ' | got: ' + JSON.stringify(actual));
+      failed++;
+    }
+  }
+
+  function assertApprox(description, actual, expected, tolerance) {
+    var tol = (tolerance == null) ? 1e-9 : tolerance;
+    if (typeof actual === 'number' && typeof expected === 'number' && Math.abs(actual - expected) <= tol) {
+      Logger.log('PASS: ' + description);
+      passed++;
+    } else {
+      Logger.log('FAIL: ' + description + ' | expected: ' + JSON.stringify(expected) + ' (±' + tol + ') | got: ' + JSON.stringify(actual));
+      failed++;
+    }
+  }
+
+  // escapeHtml_
+  assert('escapeHtml_: ampersand', escapeHtml_('Bosses & Bears'), 'Bosses &amp; Bears');
+  assert('escapeHtml_: less-than', escapeHtml_('<script>'), '&lt;script&gt;');
+  assert('escapeHtml_: double quotes', escapeHtml_('"quoted"'), '&quot;quoted&quot;');
+  assert('escapeHtml_: single quotes', escapeHtml_("it's"), 'it&#39;s');
+  assert('escapeHtml_: null becomes empty string', escapeHtml_(null), '');
+  assert('escapeHtml_: undefined becomes empty string', escapeHtml_(undefined), '');
+  assert('escapeHtml_: plain text unchanged', escapeHtml_('Hello World'), 'Hello World');
+
+  // validateWeek_
+  var weekErrors = 0;
+  try { validateWeek_(0, 'test'); } catch(e) { weekErrors++; }
+  try { validateWeek_(19, 'test'); } catch(e) { weekErrors++; }
+  try { validateWeek_(null, 'test'); } catch(e) { weekErrors++; }
+  assert('validateWeek_: rejects 0, 19, null', weekErrors, 3);
+  var weekPasses = 0;
+  try { validateWeek_(1, 'test'); weekPasses++; } catch(e) {}
+  try { validateWeek_(18, 'test'); weekPasses++; } catch(e) {}
+  assert('validateWeek_: accepts 1 and 18', weekPasses, 2);
+
+  // flattenYahooMeta_
+  var flat = flattenYahooMeta_([{ name: 'Team A' }, { team_id: '1' }]);
+  assert('flattenYahooMeta_: name', flat.name, 'Team A');
+  assert('flattenYahooMeta_: team_id', flat.team_id, '1');
+  var flatObj = flattenYahooMeta_({ foo: 'bar', baz: 42 });
+  assert('flattenYahooMeta_: plain object passthrough', flatObj.foo, 'bar');
+  var flatEmpty = flattenYahooMeta_(null);
+  assert('flattenYahooMeta_: null returns empty object', Object.keys(flatEmpty).length, 0);
+
+  // parseTeamMeta_
+  var mockWrapper = {
+    team: [
+      [{ name: 'Test Team' }, { managers: [{ manager: { nickname: 'TestMgr' } }] }],
+      { team_points: { total: '125.5' } }
+    ]
+  };
+  var tm = parseTeamMeta_(mockWrapper);
+  assert('parseTeamMeta_: team_name', tm.team_name, 'Test Team');
+  assert('parseTeamMeta_: manager_name', tm.manager_name, 'TestMgr');
+  assertApprox('parseTeamMeta_: points', tm.points, 125.5, 0.001);
+  var tmNoPoints = parseTeamMeta_({ team: [[{ name: 'No Pts' }], {}] });
+  assertApprox('parseTeamMeta_: points default 0', tmNoPoints.points, 0, 0.001);
+  var mockWrapperProj = {
+    team: [
+      [{ name: 'Proj Team' }],
+      { team_projected_points: { total: '98.3' }, team_points: { total: '10.0' } }
+    ]
+  };
+  var tmProj = parseTeamMeta_(mockWrapperProj, 'team_projected_points');
+  assertApprox('parseTeamMeta_: uses pointsField when provided', tmProj.points, 98.3, 0.001);
+
+  // getPlayerSlot_
+  assert('getPlayerSlot_: returns null when no slot', getPlayerSlot_([{ player_key: 'abc' }]), null);
+  assert('getPlayerSlot_: returns null for empty array', getPlayerSlot_([]), null);
+  var benchPlayer = [{ player_key: 'x' }, { selected_position: [{ week: 1, position: 'BN' }] }];
+  assert('getPlayerSlot_: returns BN', getPlayerSlot_(benchPlayer), 'BN');
+  var qbPlayer = [{ player_key: 'x' }, { selected_position: [{ week: 1, position: 'QB' }] }];
+  assert('getPlayerSlot_: returns QB', getPlayerSlot_(qbPlayer), 'QB');
+
+  // isSupabaseConfigured_ (read-only, depends on script properties)
+  var sbResult = isSupabaseConfigured_();
+  assert('isSupabaseConfigured_: returns boolean', typeof sbResult, 'boolean');
+
+  Logger.log('─────────────────────────────────');
+  Logger.log('Tests complete: ' + passed + ' passed, ' + failed + ' failed.');
+  if (failed > 0) {
+    Logger.log('ACTION REQUIRED: ' + failed + ' test(s) failed — see FAIL lines above.');
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────

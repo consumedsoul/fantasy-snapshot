@@ -10,7 +10,7 @@ Google Apps Script that pulls Yahoo Fantasy Football league data, builds a weekl
 
 ## Project layout
 
-Single file: `Code.gs` (2068 lines)
+Single file: `Code.gs` (~2,300 lines)
 
 ## Function Index
 
@@ -43,15 +43,17 @@ Single file: `Code.gs` (2068 lines)
 **Weekly Data:**
 - `getCurrentWeek_(leagueKey)` — Determines current NFL week
 - `getWeekMatchups_(week, leagueKey)` — Fetches scoreboard, calculates close matchups and projected scores
-- `getWeekTeamHighlights_(week, leagueKey)` — Top teams, blowouts, bad beats
-- `getWeekTeamScores_(week, leagueKey)` — Fetches ALL team scores from scoreboard (sorted by points desc)
-- `getWeeklyPowerRankings_(completedWeek, leagueKey)` — 3-week rolling average power rankings with trend arrows
-- `getWeekBenchSummary_(week, leagueKey)` — Most points left on bench
-- `getTopWaiverPickupsForWeek_(week, limit, leagueKey)` — Best pickups started
+- `getWeekTeamHighlights_(week, leagueKey, matchupsData?)` — Top teams, blowouts, bad beats
+- `getWeekTeamScores_(week, leagueKey, matchupsData?)` — Fetches ALL team scores from scoreboard (sorted by points desc)
+- `getWeeklyPowerRankings_(completedWeek, leagueKey, currentWeekScores?)` — 3-week rolling average power rankings with trend arrows
+- `getWeekBenchSummary_(week, leagueKey, rosterTeams?)` — Most points left on bench
+- `getTopWaiverPickupsForWeek_(week, limit, leagueKey, rosterTeams?)` — Best pickups started
+- `fetchWeekRosterTeams_(week, leagueKey)` — Fetches teams+roster once; pass result to bench/waiver functions to avoid duplicate API calls
+- `fetchWeekScoreboard_(week, leagueKey)` — Fetches scoreboard matchupsContainer once; pass result to highlights/scores/power rankings to avoid duplicate API calls
 
 **Player Data:**
 - `getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey)` — Batch fetch player points
-- `getWeekStartedPlayerKeys_(week, leagueKey)` — All non-bench players
+- `getWeekStartedPlayerKeys_(week, leagueKey, rosterTeams?)` — All non-bench players
 - `getPlayerOwnerMap_(leagueKey)` — Maps player_key → team_name
 - `getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagueKey)` — Position leaders (QB, RB, WR, TE, K, DEF)
 
@@ -62,6 +64,7 @@ Single file: `Code.gs` (2068 lines)
 
 **Supabase / Persistence:**
 - `isSupabaseConfigured_()` — Returns boolean; gates all Supabase operations
+- `verifySupabaseSchema_()` — Checks `weekly_snapshots` table is accessible; run manually after initial setup or call from `pullFantasyData`
 - `persistWeeklySnapshot_(leagueKey, completedWeek, standings, weeklyScoreMap)` — Upserts standings + scores to Supabase `weekly_snapshots` table
 - `getSeasonTrends_(leagueKey)` — Fetches historical data from Supabase, calculates scoring trends, consistency, luck factor (requires 3+ weeks)
 
@@ -71,6 +74,8 @@ Single file: `Code.gs` (2068 lines)
 - `getPlayerSlot_(playerArr)` — Extracts selected position/slot from Yahoo player array
 - `validateWeek_(week, functionName)` — Validates week is 1-18
 - `retryWithBackoff_(fn, maxRetries)` — Exponential backoff retry (3 attempts: 2s, 4s, 8s)
+- `escapeHtml_(str)` — Escapes `&`, `<`, `>`, `"` before inserting into HTML email output
+- `runTests()` — Runs unit tests on pure utilities; results logged to execution log
 
 **Snapshot Assembly:**
 - `buildLeagueSnapshot_(league)` — Assembles full weekly snapshot as styled HTML
@@ -159,6 +164,10 @@ Then set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Script Properties. The snapsh
 
 **After any code changes, always commit/push to git AND push to Google Apps Script via `clasp push`.** Both destinations must stay in sync. Never consider a code change complete until it has been committed to git and deployed to GAS.
 
+### Rollback
+- **Via Apps Script**: Editor → Project History → select a prior version → Restore
+- **Via git**: `git checkout <commit> Code.gs && clasp push`
+
 ## Conventions & gotchas
 
 - Private/internal helpers are suffixed with `_` (e.g. `getConfig_()`). Public entry points: `pullFantasyData`, `startYahooAuth`, `doGet`, `debugAllLeaguesRaw`, `debugSnapshotToLog`.
@@ -174,7 +183,7 @@ Then set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Script Properties. The snapsh
 
 ## Global Constants
 
-Defined at `Code.gs:1513-1519`:
+Defined at the top of `Code.gs` (lines 1-11):
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -183,8 +192,38 @@ Defined at `Code.gs:1513-1519`:
 | `TOKEN_REFRESH_BUFFER_MS` | 300000 | Refresh token 5 min before expiry |
 | `RATE_LIMIT_DELAY_MS` | 200 | Delay between API batches |
 | `MIN_WEEK` / `MAX_WEEK` | 1 / 18 | NFL week range for validation |
+| `POWER_RANKING_WINDOW` | 3 | Rolling weeks for power rankings |
+| `SLOW_RUN_THRESHOLD_SEC` | 240 | Alert if execution exceeds 4 minutes |
 
 ## Recent Improvements
+
+**2026-04-22 (audit findings):**
+- 🔴 0 Critical, 🟠 2 High (Season Trends reads Supabase before current week is persisted; working tree has uncommitted fix pass), 🟡 3 Medium
+- Score: 91/100 (-2 from 93 — structural, not code-quality; two new High items offset the 100% resolution rate on Apr-06 items)
+- All 8 items from 2026-04-06 resolved in the working tree (bp.name escape, Supabase schema warning, `runTests()` expansion to cover `parseTeamMeta_` + `getPlayerSlot_`, README rewrite, `getWeeklyPowerRankings_` reusing shared scoreboard)
+- Action required: reorder `getSeasonTrends_` to run after `persistWeeklySnapshot_` in `buildLeagueSnapshot_` so trends include the current completed week; commit + `clasp push` the working-tree changes
+- See [docs/audits/2026-04-22-audit.md](docs/audits/2026-04-22-audit.md)
+
+**2026-04-06 (audit fixes — applied in working tree, awaiting commit/push):**
+- ✅ `escapeHtml_(bp.name)` applied in bench summary detail string (completes 100% coverage)
+- ✅ `verifySupabaseSchema_()` return value checked — sends notification email when schema is missing
+- ✅ `runTests()` expanded with `parseTeamMeta_` and `getPlayerSlot_` assertions (22+ assertions total)
+- ✅ `getWeeklyPowerRankings_` now accepts `currentWeekScores` to reuse pre-fetched completedWeek scoreboard
+- ✅ README.md expanded with full setup/OAuth/deployment steps
+- See [docs/audits/2026-04-06-audit.md](docs/audits/2026-04-06-audit.md)
+
+**2026-03-23 (audit fixes):**
+- ✅ `escapeHtml_()` helper added — all dynamic values (team names, league names, error messages) now escaped before HTML insertion
+- ✅ `fetchWeekRosterTeams_()` helper extracted — `getWeekBenchSummary_` and `getWeekStartedPlayerKeys_` now share one roster fetch per run
+- ✅ Supabase persistence moved into `buildLeagueSnapshot_` — eliminates duplicate `getLeagueStandings_` call in `pullFantasyData`
+- ✅ `verifySupabaseSchema_()` added — checks `weekly_snapshots` table on startup; logs clear error if schema is missing
+- ✅ Global constants moved to top of file; `POWER_RANKING_WINDOW` and `SLOW_RUN_THRESHOLD_SEC` promoted to named constants
+- ✅ `runTests()` added — unit tests for `escapeHtml_`, `validateWeek_`, `flattenYahooMeta_` (run manually from IDE)
+- ✅ Execution time alert in `pullFantasyData` — sends notification email if run exceeds 4 minutes
+- ✅ `doGet`: added basic `params.code` length validation
+- ✅ JSDoc added to `getWeekTeamHighlights_`, `getWeekBenchSummary_`, `getWeekStartedPlayerKeys_`
+- ✅ Rollback strategy documented
+- See [docs/audits/2026-03-23-audit.md](docs/audits/2026-03-23-audit.md) for full details.
 
 **2026-02-19 (new features + audit fixes):**
 - ✅ **Matchup Projections** — projected scores, spread, and confidence % for upcoming week
