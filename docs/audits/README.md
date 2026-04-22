@@ -4,7 +4,74 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 
 ## Audit Index
 
-### [2026-02-19 Audit](2026-02-19-audit.md) ⭐ Latest
+### [2026-04-22 Audit](2026-04-22-audit.md) ⭐ Latest
+**Status:** Follow-up audit (16 days after last audit)
+**Score:** 91/100 (A - Excellent)
+**Issues Found:**
+- 🔴 Critical: 0
+- 🟠 High: 2
+- 🟡 Medium: 3
+- ⚪ Low: 3
+- 💡 Feature Ideas: 4
+
+**Total Action Items:** 8
+
+**Key Findings:**
+- All 8 items from the 2026-04-06 audit applied in the working tree (100% fix rate): bp.name escape, Supabase schema warning, `runTests()` expansion to cover `parseTeamMeta_` + `getPlayerSlot_`, README rewrite, `getWeeklyPowerRankings_` reusing shared scoreboard
+- **Two new High items:** (1) `getSeasonTrends_()` runs before `persistWeeklySnapshot_()` inside `buildLeagueSnapshot_`, so the Season Trends table always excludes the most-recently completed week; (2) all Apr-06 fixes are still uncommitted — `git status` shows 4 modified files and 2 untracked audit files, meaning the fixes are not live in git or GAS
+- Score regression (-2) is structural, not a code-quality issue — the code is objectively better; the dip is the cost of undeployed work plus the newly-identified ordering bug
+- `runTests()` now has 22+ assertions across 8 helpers
+
+**Overall Health:** Excellent (91/100) — Commit + push + one reorder brings this back above 95.
+
+---
+
+### [2026-04-06 Audit](2026-04-06-audit.md)
+**Status:** Follow-up audit (14 days after last audit)
+**Score:** 93/100 (A - Excellent)
+**Issues Found:**
+- 🔴 Critical: 0
+- 🟠 High: 1
+- 🟡 Medium: 4
+- ⚪ Low: 3
+- 💡 Feature Ideas: 4
+
+**Total Action Items:** 8
+
+**Key Findings:**
+- All 11 action items from the 2026-03-23 audit were resolved (100% resolution rate): `escapeHtml_()` applied everywhere, shared roster fetch extracted, Supabase startup verification added, execution time alert implemented, unit tests added
+- One new high-priority issue introduced: bench player names (`bp.name`) concatenated into HTML detail string without `escapeHtml_()` — the single remaining injection point
+- `runTests()` now exists with 13 assertions but lacks coverage for `parseTeamMeta_()` and `getPlayerSlot_()`
+- Score jumped +9 points to 93/100 — highest score in project history
+
+**Overall Health:** Excellent (93/100) — Production-hardened and feature-complete. Remaining work is minor polish.
+
+---
+
+### [2026-03-23 Audit](2026-03-23-audit.md)
+**Status:** Follow-up audit (32 days after last audit)
+**Score:** 84/100 (A- - Very Good)
+**Issues Found:**
+- 🔴 Critical: 0
+- 🟠 High: 2
+- 🟡 Medium: 5
+- ⚪ Low: 4
+- 💡 Feature Ideas: 6
+
+**Total Action Items:** 11
+
+**Key Findings:**
+- Two new high-priority issues introduced with recent features: unescaped HTML in email body (XSS risk) and duplicate roster API calls
+- Four features added since last audit: power rankings, season trends, matchup projections, Supabase persistence
+- Plain text fallback (carried over from Feb 19) was resolved — now properly adds newlines between blocks
+- No unit tests still the biggest single gap
+- Score essentially flat at 84/100 (vs 85 last audit) — new features came with new issues
+
+**Overall Health:** Very Good (84/100) — Feature-complete and production-ready. Focus areas: HTML safety, API call reduction, testing.
+
+---
+
+### [2026-02-19 Audit](2026-02-19-audit.md)
 **Status:** Follow-up audit
 **Score:** 85/100 (A - Very Good)
 **Issues Found:**
@@ -23,7 +90,7 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 - 3 new DRY helpers extracted (`flattenYahooMeta_`, `parseTeamMeta_`, `getPlayerSlot_`)
 - Code reduced from 1,644 to 1,543 lines (extracted duplication)
 
-**Overall Health:** ✅ **Very Good** (85/100) - Production-ready. Remaining work focuses on testing, documentation depth, and dead code cleanup.
+**Overall Health:** Very Good (85/100) — Production-ready. Remaining work focuses on testing, documentation depth, and dead code cleanup.
 
 ---
 
@@ -46,7 +113,7 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 - New finding: `\u0013` unicode control character in snapshot output
 - `.clasp.json` flagged (later found to be false positive — never tracked)
 
-**Overall Health:** ✅ **Good** (72/100) - Production-ready. Focus areas: HTML emails, code DRY-ness, housekeeping.
+**Overall Health:** Good (72/100) — Production-ready. Focus areas: HTML emails, code DRY-ness, housekeeping.
 
 ---
 
@@ -68,7 +135,7 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 - Remaining items are quality-of-life improvements
 - Production-ready with robust error handling
 
-**Overall Health:** ✅ **Good** - Production-ready with comprehensive error handling, retry logic, and monitoring.
+**Overall Health:** Good (65/100) — Production-ready with comprehensive error handling, retry logic, and monitoring.
 
 ---
 
@@ -91,7 +158,7 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 - Token expiration not proactively checked
 - No retry logic for transient API failures
 
-**Overall Health:** ⚠️ **Fair** - Core functionality works but lacks production-grade error handling, monitoring, and resilience.
+**Overall Health:** Fair (50/100) — Core functionality works but lacks production-grade error handling, monitoring, and resilience.
 
 ---
 
@@ -104,8 +171,11 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 | 2026-02-14 | 65/100  | 85/100   | 75/100      | 65/100       | 70/100        | C     | +15    |
 | 2026-02-17 | 72/100  | 85/100   | 90/100      | 75/100       | 70/100        | B     | +7     |
 | 2026-02-19 | 85/100  | 95/100   | 95/100      | 85/100       | 80/100        | A     | +13    |
+| 2026-03-23 | 84/100  | 95/100   | 88/100      | 82/100       | 83/100        | A-    | -1     |
+| 2026-04-06 | 93/100  | 97/100   | 95/100      | 91/100       | 90/100        | A     | +9     |
+| 2026-04-22 | 91/100  | 97/100   | 96/100      | 92/100       | 89/100        | A     | -2     |
 
-**Trend:** ✅ **Improving** (+35 points total over 10 days)
+**Trend:** Slight regression (-2) despite 100% fix rate on 2026-04-06 items — driven by one newly-surfaced data-ordering bug (Season Trends lags by a week) and by the entire fix pass being uncommitted. Code quality itself is the highest it has ever been; committing + one reorder pushes score to 95+.
 
 ### Issue Count Over Time
 | Audit Date | Critical | High | Medium | Low | Total |
@@ -114,32 +184,42 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 | 2026-02-14 | 0        | 2    | 8      | 5   | 15    |
 | 2026-02-17 | 0        | 1    | 5      | 5   | 11    |
 | 2026-02-19 | 0        | 0    | 4      | 5   | 9     |
+| 2026-03-23 | 0        | 2    | 5      | 4   | 11    |
+| 2026-04-06 | 0        | 1    | 4      | 3   | 8     |
+| 2026-04-22 | 0        | 2    | 3      | 3   | 8     |
 
 ### Key Metrics
 - **Total Files:** 8
-- **Lines of Code:** 1,543 (Code.gs)
-- **API Integrations:** Yahoo Fantasy Sports API v2, Supabase (planned)
-- **Test Coverage:** 0% (no tests)
-- **Code Health Trajectory:** ⚠️ Fair → ✅ Good → ✅ Good → ✅ Very Good
+- **Lines of Code:** 2,275 (Code.gs)
+- **API Integrations:** Yahoo Fantasy Sports API v2, Supabase (optional)
+- **Test Coverage:** `runTests()` now has 22+ assertions across `escapeHtml_`, `validateWeek_`, `flattenYahooMeta_`, `isSupabaseConfigured_`, `parseTeamMeta_`, `getPlayerSlot_`
+- **Code Health Trajectory:** Fair → Good → Good → Very Good → Very Good → Excellent → Excellent
 
-### Progress Highlights
-**2026-02-17 → 2026-02-19:**
-- ✅ HTML email output with styled tables and inline CSS
-- ✅ Plain text fallback generated from HTML
-- ✅ `flattenYahooMeta_()` extracted — DRYed ~10 repeated blocks
-- ✅ `parseTeamMeta_()` extracted — unified team parsing
-- ✅ `getPlayerSlot_()` extracted — shared slot-finding
-- ✅ Unicode `\u0013` replaced with em dash
-- ✅ `.clasp.json.example` template created
-- ✅ CLAUDE.md updated with new helpers and improvements
+### Feature Additions Since Initial Audit
+- HTML email with styled tables and callout boxes
+- Power Rankings (3-week rolling average with trend arrows)
+- Season-Long Trends with consistency and luck factor
+- Matchup Projections for upcoming week
+- Supabase persistence for season-long data
+- Rate limiting, retry logic, caching throughout
+- `fetchWeekRosterTeams_()` shared fetch for bench/waiver analysis
+- `escapeHtml_()` applied throughout all HTML output
+- `verifySupabaseSchema_()` startup health check
+- Execution time alert for slow runs
+
+### Key Persistent Gaps
+- No CI/CD pipeline
+- Working-tree vs git vs GAS deployment drift (2026-04-22: 4 modified files uncommitted)
+- Season Trends data-ordering bug (reads Supabase before current week is persisted)
 
 ### Next Audit Target
-**Date:** 2026-02-26 (1 week)
-**Expected Improvements:**
-- Plain text fallback improved
-- README example output updated
-- Possibly unit tests started
-- Supabase decision made
+**Suggested Date:** 2026-05-06 (2 weeks)
+**Target Score:** 95+/100
+**Key Goals:**
+- Commit and deploy the 2026-04-06 fix pass (highest-impact single action)
+- Reorder `persistWeeklySnapshot_` before `getSeasonTrends_` in `buildLeagueSnapshot_`
+- Add single-quote escape to `escapeHtml_` for defense-in-depth
+- Off-season handling: decide whether to pause the weekly trigger
 
 ---
 
