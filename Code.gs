@@ -55,8 +55,15 @@ function supabaseRequest_(path, method, payload) {
     options.payload = JSON.stringify(payload);
   }
 
+  // muteHttpExceptions returns a response for HTTP errors (no throw), so explicitly
+  // throw on transient 429/5xx inside the closure to engage retryWithBackoff_.
   var response = retryWithBackoff_(function() {
-    return UrlFetchApp.fetch(url, options);
+    var res = UrlFetchApp.fetch(url, options);
+    var code = res.getResponseCode();
+    if (code === 429 || code >= 500) {
+      throw new Error('[supabaseRequest_] Retryable HTTP ' + code + ': ' + res.getContentText());
+    }
+    return res;
   });
 
   var status = response.getResponseCode();
@@ -1070,15 +1077,31 @@ function getWeekStartedPlayerKeys_(week, leagueKey, rosterTeams) {
   return started;
 }
 
-function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagueKey) {
-  validateWeek_(week, 'getTopPlayersForWeekAndPosition_');
+/**
+ * Fetches weekly stats for all rostered players ONCE and buckets the top scorers
+ * by display position. Replaces the old per-position helper that re-fetched the
+ * same player-stats payloads once per position (6x redundant Yahoo API calls).
+ *
+ * @param {number} week - NFL week number (1-18)
+ * @param {Array<string>} positions - Positions to return (e.g. ['QB','WR','RB','TE','K','DEF'])
+ * @param {number} limit - Max players per position (default 3)
+ * @param {Object} ownerMap - Map of player_key -> team_name (from getPlayerOwnerMap_)
+ * @param {string} [leagueKey] - League key (defaults to YAHOO_LEAGUE_KEY property)
+ * @returns {Object} Map of position -> Array<{name, position, owner, points}> sorted desc and capped
+ */
+function getTopPlayersByPositionForWeek_(week, positions, limit, ownerMap, leagueKey) {
+  validateWeek_(week, 'getTopPlayersByPositionForWeek_');
   leagueKey = leagueKey || getLeagueKey_();
+
+  var byPosition = {};
+  var wanted = {};
+  positions.forEach(function (pos) { byPosition[pos] = []; wanted[pos] = true; });
+
   var playerKeys = Object.keys(ownerMap || {});
   if (!playerKeys.length) {
-    return [];
+    return byPosition;
   }
 
-  var rows = [];
   var chunkSize = YAHOO_API_BATCH_SIZE;
 
   for (var i = 0; i < playerKeys.length; i += chunkSize) {
@@ -1087,55 +1110,52 @@ function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagu
     var data = yahooApiRequest_(path, {});
     var fantasyContent = data && data.fantasy_content;
     var leagueArr = fantasyContent && fantasyContent.league;
-    if (!leagueArr || !leagueArr[1] || !leagueArr[1].players) {
-      continue;
-    }
 
-    var playersContainer = leagueArr[1].players;
-    var playerCount = playersContainer.count;
+    if (leagueArr && leagueArr[1] && leagueArr[1].players) {
+      var playersContainer = leagueArr[1].players;
+      var playerCount = playersContainer.count;
 
-    for (var j = 0; j < playerCount; j++) {
-      var pWrapper = playersContainer[String(j)];
-      if (!pWrapper || !pWrapper.player) {
-        continue;
-      }
-
-      var p = pWrapper.player;
-      var meta = flattenYahooMeta_(p[0]);
-      var name = (meta.name && meta.name.full) ? meta.name.full : '';
-      var displayPosition = meta.display_position || '';
-      var points = 0;
-
-      for (var k = 1; k < p.length; k++) {
-        var entry = p[k];
-        if (!entry || typeof entry !== 'object') {
+      for (var j = 0; j < playerCount; j++) {
+        var pWrapper = playersContainer[String(j)];
+        if (!pWrapper || !pWrapper.player) {
           continue;
         }
-        if (entry.name && entry.name.full && !name) {
-          name = entry.name.full;
+
+        var p = pWrapper.player;
+        var meta = flattenYahooMeta_(p[0]);
+        var name = (meta.name && meta.name.full) ? meta.name.full : '';
+        var displayPosition = meta.display_position || '';
+        var points = 0;
+
+        for (var k = 1; k < p.length; k++) {
+          var entry = p[k];
+          if (!entry || typeof entry !== 'object') {
+            continue;
+          }
+          if (entry.name && entry.name.full && !name) {
+            name = entry.name.full;
+          }
+          if (entry.display_position && !displayPosition) {
+            displayPosition = entry.display_position;
+          }
+          if (entry.player_points && entry.player_points.total !== undefined) {
+            points = Number(entry.player_points.total);
+          }
         }
-        if (entry.display_position && !displayPosition) {
-          displayPosition = entry.display_position;
+
+        var playerKey = meta.player_key;
+
+        if (!playerKey || !wanted[displayPosition] || !name || points === 0) {
+          continue;
         }
-        if (entry.player_points && entry.player_points.total !== undefined) {
-          points = Number(entry.player_points.total);
-        }
+
+        byPosition[displayPosition].push({
+          name: name,
+          position: displayPosition,
+          owner: ownerMap[playerKey] || 'FA',
+          points: points
+        });
       }
-
-      var playerKey = meta.player_key;
-
-      if (!playerKey || displayPosition !== position || !name || points === 0) {
-        continue;
-      }
-
-      var ownerLabel = ownerMap[playerKey] || 'FA';
-
-      rows.push({
-        name: name,
-        position: displayPosition,
-        owner: ownerLabel,
-        points: points
-      });
     }
 
     // Add delay between batches to respect rate limits
@@ -1144,8 +1164,13 @@ function getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagu
     }
   }
 
-  rows.sort(function (a, b) { return b.points - a.points; });
-  return rows.slice(0, limit || 3);
+  var cap = limit || 3;
+  positions.forEach(function (pos) {
+    byPosition[pos].sort(function (a, b) { return b.points - a.points; });
+    byPosition[pos] = byPosition[pos].slice(0, cap);
+  });
+
+  return byPosition;
 }
 
 function getPlayerOwnerMap_(leagueKey) {
@@ -1457,7 +1482,7 @@ function buildLeagueSnapshot_(league) {
   }
 
   try {
-    if (currentWeek === null || currentWeek < 2) {
+    if (currentWeek === null || isNaN(currentWeek) || currentWeek < 2) {
       Logger.log('[buildLeagueSnapshot_] Season has not yet started for ' + leagueName + ' (current week: ' + currentWeek + '). Skipping weekly highlights.');
       h.push('<p><em>Season has not yet started. Check back after Week 1.</em></p>');
       return h.join('');
@@ -1571,10 +1596,11 @@ function buildLeagueSnapshot_(league) {
       h.push('</table>');
     }
 
-    // Position Leaders
+    // Position Leaders (single batched fetch, then bucketed by position)
     var positions = ['QB', 'WR', 'RB', 'TE', 'K', 'DEF'];
+    var topByPosition = getTopPlayersByPositionForWeek_(completedWeek, positions, 3, ownerMap, leagueKey);
     positions.forEach(function (pos) {
-      var topPlayers = getTopPlayersForWeekAndPosition_(completedWeek, pos, 3, ownerMap, leagueKey);
+      var topPlayers = topByPosition[pos];
       if (!topPlayers || !topPlayers.length) {
         return;
       }
@@ -1926,6 +1952,8 @@ function sendSnapshotEmail_(subject, htmlBody) {
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
     .replace(/&nbsp;/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -2113,8 +2141,16 @@ function yahooApiRequest_(resourcePath, queryParams) {
       muteHttpExceptions: true
     };
 
+    // muteHttpExceptions returns a response for HTTP errors (no throw). Throw on
+    // transient 429/5xx so retryWithBackoff_ applies exponential backoff. A 401
+    // (token_expired) is neither 429 nor >=500, so the refresh path below is unaffected.
     var response = retryWithBackoff_(function() {
-      return UrlFetchApp.fetch(url, options);
+      var res = UrlFetchApp.fetch(url, options);
+      var code = res.getResponseCode();
+      if (code === 429 || code >= 500) {
+        throw new Error('[yahooApiRequest_] Retryable HTTP ' + code);
+      }
+      return res;
     });
 
     return {
