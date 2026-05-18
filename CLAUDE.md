@@ -55,7 +55,7 @@ Single file: `Code.gs` (~2,300 lines)
 - `getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey)` — Batch fetch player points
 - `getWeekStartedPlayerKeys_(week, leagueKey, rosterTeams?)` — All non-bench players
 - `getPlayerOwnerMap_(leagueKey)` — Maps player_key → team_name
-- `getTopPlayersForWeekAndPosition_(week, position, limit, ownerMap, leagueKey)` — Position leaders (QB, RB, WR, TE, K, DEF)
+- `getTopPlayersByPositionForWeek_(week, positions, limit, ownerMap, leagueKey)` — Position leaders for ALL requested positions in one batched fetch; returns `{ position: [topN] }`. Replaced the old per-position `getTopPlayersForWeekAndPosition_` (which re-fetched all player stats 6×)
 
 **Email:**
 - `sendSnapshotEmail_(subject, htmlBody)` — Sends HTML email with plain text fallback and quota check
@@ -197,6 +197,16 @@ Defined at the top of `Code.gs` (lines 1-11):
 
 ## Recent Improvements
 
+**2026-05-18 (audit fixes — applied, committed + pushed in-cycle):**
+- 🔴 0 Critical, 🟠 1 High (fixed), 🟡 4 Medium (2 fixed), ⚪ 3 Low (1 fixed) — Score: 95/100 (+4 from 91)
+- ✅ **High:** `getTopPlayersForWeekAndPosition_` (called 6× in a loop, re-fetching all rostered-player stats per position) replaced with `getTopPlayersByPositionForWeek_` — one batched fetch bucketed by position (~48 → ~8 Yahoo API calls/league)
+- ✅ **Medium:** `isNaN(currentWeek)` added to the season-not-started guard in `buildLeagueSnapshot_` (a NaN week no longer produces a "Week null" email)
+- ✅ **Medium:** `retryWithBackoff_` closures in `yahooApiRequest_` and `supabaseRequest_` now throw on 429/5xx so transient failures actually get exponential backoff (previously masked by `muteHttpExceptions`); Yahoo 401 token-refresh path unaffected
+- ✅ **Low:** plain-text email fallback now decodes `&#39;` and `&quot;`
+- Verified: both 2026-04-22 High items already resolved in committed code (Season Trends ordering at `buildLeagueSnapshot_` persist→trends; single-quote escaping in `escapeHtml_`)
+- Deferred (documented): split `buildLeagueSnapshot_` (~263-line god-function); extract pure `computeSeasonTrends_` for unit-testing; OAuth `state`; `LockService`
+- See [docs/audits/2026-05-18-audit.md](docs/audits/2026-05-18-audit.md)
+
 **2026-04-22 (audit findings):**
 - 🔴 0 Critical, 🟠 2 High (Season Trends reads Supabase before current week is persisted; working tree has uncommitted fix pass), 🟡 3 Medium
 - Score: 91/100 (-2 from 93 — structural, not code-quality; two new High items offset the 100% resolution rate on Apr-06 items)
@@ -267,4 +277,4 @@ Defined at the top of `Code.gs` (lines 1-11):
 - ✅ Email quota checks before sending
 
 **Remaining:**
-See [docs/audits/2026-02-19-audit.md](docs/audits/2026-02-19-audit.md) for current issues and feature ideas.
+See [docs/audits/2026-05-18-audit.md](docs/audits/2026-05-18-audit.md) for current issues and feature ideas.

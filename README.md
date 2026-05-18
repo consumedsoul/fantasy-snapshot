@@ -173,16 +173,17 @@ You can also run `debugAllLeaguesRaw()` in the IDE to see all league keys for yo
 
 ## Project Status
 
-**Current Version:** v1.6
-**Code Health:** Excellent (91/100)
+**Current Version:** v1.7
+**Code Health:** Excellent (95/100)
 **Active Development:** Yes
+**Last Updated:** 2026-05-18
 
-### Recent Audit Findings (2026-04-22)
+### Recent Audit Findings (2026-05-18)
 - 🔴 0 Critical issues
-- 🟠 2 High priority items (Season Trends data-ordering lag; working tree has uncommitted fix pass)
-- 🟡 3 Medium priority items
-- ⚪ 3 Low priority items
-- See [latest audit](docs/audits/2026-04-22-audit.md) for details
+- 🟠 1 High priority item — position leaders re-fetched all player stats 6× per run (**fixed**: ~48 → ~8 Yahoo API calls/league)
+- 🟡 4 Medium priority items (NaN-week guard + 429/5xx retry **fixed**; god-function split + trends-testability deferred)
+- ⚪ 3 Low priority items (plain-text entity decode **fixed**; OAuth `state` + `LockService` deferred)
+- See [latest audit](docs/audits/2026-05-18-audit.md) for details
 
 ## Contributing
 

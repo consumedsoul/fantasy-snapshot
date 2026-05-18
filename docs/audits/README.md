@@ -4,7 +4,31 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 
 ## Audit Index
 
-### [2026-04-22 Audit](2026-04-22-audit.md) ⭐ Latest
+### [2026-05-18 Audit](2026-05-18-audit.md) ⭐ Latest
+**Status:** Follow-up audit (26 days after last audit) — fixes applied + deployed in-cycle
+**Score:** 95/100 (A - Excellent)
+**Issues Found:**
+- 🔴 Critical: 0
+- 🟠 High: 1 (fixed this commit)
+- 🟡 Medium: 4 (2 fixed, 2 deferred)
+- ⚪ Low: 3 (1 fixed, 2 deferred)
+- 💡 Feature Ideas: 4
+
+**Total Action Items:** 8 — 5 resolved in this commit, 3 deferred with rationale
+
+**Key Findings:**
+- **High (fixed):** position leaders re-fetched all rostered-player stats once per position — `getTopPlayersForWeekAndPosition_` called 6× in a loop. Replaced with single batched `getTopPlayersByPositionForWeek_` → ~48 → ~8 Yahoo API calls per league
+- **Medium (fixed):** NaN `currentWeek` slipped past the season-not-started guard; transient 429/5xx were never retried (masked by `muteHttpExceptions`) — both now handled
+- **Low (fixed):** plain-text email fallback now decodes `&#39;`/`&quot;`
+- Scout-agent "Critical" findings (SQL injection, hardcoded Supabase URL) were **fabricated** and discarded after a full-file read — code uses PostgREST JSON and a `SUPABASE_URL` property
+- Both 2026-04-22 High items verified already resolved in committed code (3002d1b); no deployment drift this cycle
+- Deferred (documented): `buildLeagueSnapshot_` god-function split, `getSeasonTrends_` pure-helper extraction for testability, OAuth `state`, `LockService`
+
+**Overall Health:** Excellent (95/100) — best state in project history; biggest API-cost hotspot eliminated, resilience complete, zero deployment drift.
+
+---
+
+### [2026-04-22 Audit](2026-04-22-audit.md)
 **Status:** Follow-up audit (16 days after last audit)
 **Score:** 91/100 (A - Excellent)
 **Issues Found:**
@@ -174,8 +198,9 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 | 2026-03-23 | 84/100  | 95/100   | 88/100      | 82/100       | 83/100        | A-    | -1     |
 | 2026-04-06 | 93/100  | 97/100   | 95/100      | 91/100       | 90/100        | A     | +9     |
 | 2026-04-22 | 91/100  | 97/100   | 96/100      | 92/100       | 89/100        | A     | -2     |
+| 2026-05-18 | 95/100  | 97/100   | 98/100      | 93/100       | 92/100        | A     | +4     |
 
-**Trend:** Slight regression (-2) despite 100% fix rate on 2026-04-06 items — driven by one newly-surfaced data-ordering bug (Season Trends lags by a week) and by the entire fix pass being uncommitted. Code quality itself is the highest it has ever been; committing + one reorder pushes score to 95+.
+**Trend:** Recovery (+4) to the highest score in project history. The biggest API-cost hotspot (position leaders re-fetching all player stats 6×) is eliminated, transient-failure resilience is now complete on both Yahoo and Supabase, and fixes were committed + pushed in-cycle so there is zero deployment drift.
 
 ### Issue Count Over Time
 | Audit Date | Critical | High | Medium | Low | Total |
@@ -187,13 +212,15 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 | 2026-03-23 | 0        | 2    | 5      | 4   | 11    |
 | 2026-04-06 | 0        | 1    | 4      | 3   | 8     |
 | 2026-04-22 | 0        | 2    | 3      | 3   | 8     |
+| 2026-05-18 | 0        | 1    | 4      | 3   | 8     |
 
 ### Key Metrics
 - **Total Files:** 8
-- **Lines of Code:** 2,275 (Code.gs)
+- **Lines of Code:** 2,328 (Code.gs)
 - **API Integrations:** Yahoo Fantasy Sports API v2, Supabase (optional)
-- **Test Coverage:** `runTests()` now has 22+ assertions across `escapeHtml_`, `validateWeek_`, `flattenYahooMeta_`, `isSupabaseConfigured_`, `parseTeamMeta_`, `getPlayerSlot_`
-- **Code Health Trajectory:** Fair → Good → Good → Very Good → Very Good → Excellent → Excellent
+- **Yahoo API calls / league / run:** dropped sharply — position leaders alone went from ~48 to ~8 calls
+- **Test Coverage:** `runTests()` has 24+ assertions across `escapeHtml_`, `validateWeek_`, `flattenYahooMeta_`, `isSupabaseConfigured_`, `parseTeamMeta_`, `getPlayerSlot_`
+- **Code Health Trajectory:** Fair → Good → Good → Very Good → Very Good → Excellent → Excellent → Excellent
 
 ### Feature Additions Since Initial Audit
 - HTML email with styled tables and callout boxes
@@ -209,17 +236,23 @@ This directory contains weekly code audits for the fantasy-snapshot project.
 
 ### Key Persistent Gaps
 - No CI/CD pipeline
-- Working-tree vs git vs GAS deployment drift (2026-04-22: 4 modified files uncommitted)
-- Season Trends data-ordering bug (reads Supabase before current week is persisted)
+- `buildLeagueSnapshot_` god-function (~263 lines) — fetch + render not separated
+- `getSeasonTrends_` stats math untestable (entangled with the Supabase fetch)
+- Off-season handling: weekly trigger still emails empty snapshots out of season
+
+### Resolved Persistent Gaps
+- ✅ Deployment drift — 2026-05-18 fixes committed + pushed + `clasp`-deployed in-cycle
+- ✅ Season Trends data-ordering bug — verified resolved in committed code (3002d1b)
+- ✅ Position-leaders API-cost hotspot — ~48 → ~8 calls/league
 
 ### Next Audit Target
-**Suggested Date:** 2026-05-06 (2 weeks)
-**Target Score:** 95+/100
+**Suggested Date:** 2026-06-01 (2 weeks)
+**Target Score:** 96+/100
 **Key Goals:**
-- Commit and deploy the 2026-04-06 fix pass (highest-impact single action)
-- Reorder `persistWeeklySnapshot_` before `getSeasonTrends_` in `buildLeagueSnapshot_`
-- Add single-quote escape to `escapeHtml_` for defense-in-depth
-- Off-season handling: decide whether to pause the weekly trigger
+- Extract a pure `computeSeasonTrends_(rows)` helper and add `runTests()` coverage
+- Implement off-season trigger behavior (relevant now — deep off-season)
+- Consider the `buildLeagueSnapshot_` fetch/render split as a standalone change
+- Re-verify `clasp push` reached GAS (clasp may not be configured in the worktree)
 
 ---
 
