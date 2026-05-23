@@ -180,13 +180,133 @@ function persistWeeklySnapshot_(leagueKey, completedWeek, standings, weeklyScore
 }
 
 /**
- * Fetches all weekly snapshots for a league from Supabase and calculates trends.
- * Requires 3+ weeks of data. Returns null if Supabase not configured or insufficient data.
+ * Returns the median of a numeric array. Returns 0 for an empty/missing array.
+ * Does not mutate the input.
+ * @param {Array<number>} values
+ * @returns {number}
+ */
+function median_(values) {
+  if (!values || !values.length) {
+    return 0;
+  }
+  var arr = values.slice().sort(function (a, b) { return a - b; });
+  var mid = Math.floor(arr.length / 2);
+  return arr.length % 2 !== 0 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+}
+
+/**
+ * Computes per-team season trends from raw weekly_snapshots rows.
+ * Pure (no I/O) so it can be unit-tested. Returns null when fewer than 3 distinct
+ * weeks of data are present, or when input is empty.
  *
- * @param {string} leagueKey - The league key
+ * @param {Array<Object>} rows - weekly_snapshots rows ordered by week asc; each:
+ *   {week, team_name, manager_name, weekly_score, wins, losses, ...}
  * @returns {Array<{team_name: string, scoring_trend: string, avg_weekly_score: number,
  *   std_dev: number, consistency_rating: string, expected_wins: number,
  *   actual_wins: number, luck_factor: number}>|null}
+ */
+function computeSeasonTrends_(rows) {
+  if (!rows || !rows.length) {
+    return null;
+  }
+
+  // Need at least 3 weeks of data for meaningful trends
+  var weeks = {};
+  rows.forEach(function (row) { weeks[row.week] = true; });
+  if (Object.keys(weeks).length < 3) {
+    return null;
+  }
+
+  // Group by team
+  var teamData = {};
+  rows.forEach(function (row) {
+    if (!teamData[row.team_name]) {
+      teamData[row.team_name] = {
+        team_name: row.team_name,
+        manager_name: row.manager_name || '',
+        scores: [],
+        wins: 0,
+        losses: 0
+      };
+    }
+    if (row.weekly_score !== null && row.weekly_score !== undefined) {
+      teamData[row.team_name].scores.push(Number(row.weekly_score));
+    }
+    teamData[row.team_name].wins = row.wins || 0;
+    teamData[row.team_name].losses = row.losses || 0;
+  });
+
+  // Calculate league median for luck factor
+  var allScores = [];
+  rows.forEach(function (row) {
+    if (row.weekly_score !== null && row.weekly_score !== undefined) {
+      allScores.push(Number(row.weekly_score));
+    }
+  });
+  var leagueMedian = median_(allScores);
+
+  // Calculate trends per team
+  var trends = [];
+  Object.keys(teamData).forEach(function (teamName) {
+    var td = teamData[teamName];
+    if (td.scores.length < 2) {
+      return;
+    }
+
+    var sum = 0;
+    td.scores.forEach(function (s) { sum += s; });
+    var avg = sum / td.scores.length;
+
+    var sqDiffSum = 0;
+    td.scores.forEach(function (s) { sqDiffSum += Math.pow(s - avg, 2); });
+    var stdDev = Math.sqrt(sqDiffSum / td.scores.length);
+
+    // Scoring trend: compare second half to first half
+    var halfIdx = Math.floor(td.scores.length / 2);
+    var firstHalf = td.scores.slice(0, halfIdx);
+    var secondHalf = td.scores.slice(halfIdx);
+    var firstAvg = 0, secondAvg = 0;
+    firstHalf.forEach(function (s) { firstAvg += s; });
+    firstAvg = firstHalf.length ? firstAvg / firstHalf.length : 0;
+    secondHalf.forEach(function (s) { secondAvg += s; });
+    secondAvg = secondHalf.length ? secondAvg / secondHalf.length : 0;
+
+    var trendDiff = secondAvg - firstAvg;
+    var scoringTrend = Math.abs(trendDiff) < 5 ? 'stable' : (trendDiff > 0 ? 'rising' : 'falling');
+
+    // Expected wins: weeks where score > league median
+    var expectedWins = 0;
+    td.scores.forEach(function (s) {
+      if (s > leagueMedian) { expectedWins++; }
+    });
+
+    var luckFactor = td.wins - expectedWins;
+    var consistencyRating = stdDev < 12 ? 'High' : (stdDev < 20 ? 'Medium' : 'Low');
+
+    trends.push({
+      team_name: td.team_name,
+      manager_name: td.manager_name,
+      scoring_trend: scoringTrend,
+      avg_weekly_score: avg,
+      std_dev: stdDev,
+      consistency_rating: consistencyRating,
+      expected_wins: expectedWins,
+      actual_wins: td.wins,
+      luck_factor: luckFactor
+    });
+  });
+
+  trends.sort(function (a, b) { return b.avg_weekly_score - a.avg_weekly_score; });
+  return trends;
+}
+
+/**
+ * Fetches all weekly snapshots for a league from Supabase and calculates trends.
+ * Thin fetch wrapper around the pure computeSeasonTrends_(). Requires 3+ weeks of
+ * data. Returns null if Supabase not configured or insufficient data.
+ *
+ * @param {string} leagueKey - The league key
+ * @returns {Array<Object>|null}
  */
 function getSeasonTrends_(leagueKey) {
   if (!isSupabaseConfigured_()) {
@@ -200,105 +320,7 @@ function getSeasonTrends_(leagueKey) {
       '/rest/v1/weekly_snapshots?league_id=eq.' + encodeURIComponent(leagueKey) + '&order=week.asc',
       'get'
     );
-
-    if (!data || !data.length) {
-      return null;
-    }
-
-    // Need at least 3 weeks of data for meaningful trends
-    var weeks = {};
-    data.forEach(function (row) { weeks[row.week] = true; });
-    if (Object.keys(weeks).length < 3) {
-      return null;
-    }
-
-    // Group by team
-    var teamData = {};
-    data.forEach(function (row) {
-      if (!teamData[row.team_name]) {
-        teamData[row.team_name] = {
-          team_name: row.team_name,
-          manager_name: row.manager_name || '',
-          scores: [],
-          wins: 0,
-          losses: 0
-        };
-      }
-      if (row.weekly_score !== null && row.weekly_score !== undefined) {
-        teamData[row.team_name].scores.push(Number(row.weekly_score));
-      }
-      teamData[row.team_name].wins = row.wins || 0;
-      teamData[row.team_name].losses = row.losses || 0;
-    });
-
-    // Calculate league median for luck factor
-    var allScores = [];
-    data.forEach(function (row) {
-      if (row.weekly_score !== null) {
-        allScores.push(Number(row.weekly_score));
-      }
-    });
-    var leagueMedian = 0;
-    if (allScores.length) {
-      allScores.sort(function (a, b) { return a - b; });
-      var mid = Math.floor(allScores.length / 2);
-      leagueMedian = allScores.length % 2 !== 0 ? allScores[mid] : (allScores[mid - 1] + allScores[mid]) / 2;
-    }
-
-    // Calculate trends per team
-    var trends = [];
-    Object.keys(teamData).forEach(function (teamName) {
-      var td = teamData[teamName];
-      if (td.scores.length < 2) {
-        return;
-      }
-
-      var sum = 0;
-      td.scores.forEach(function (s) { sum += s; });
-      var avg = sum / td.scores.length;
-
-      var sqDiffSum = 0;
-      td.scores.forEach(function (s) { sqDiffSum += Math.pow(s - avg, 2); });
-      var stdDev = Math.sqrt(sqDiffSum / td.scores.length);
-
-      // Scoring trend: compare second half to first half
-      var halfIdx = Math.floor(td.scores.length / 2);
-      var firstHalf = td.scores.slice(0, halfIdx);
-      var secondHalf = td.scores.slice(halfIdx);
-      var firstAvg = 0, secondAvg = 0;
-      firstHalf.forEach(function (s) { firstAvg += s; });
-      firstAvg = firstHalf.length ? firstAvg / firstHalf.length : 0;
-      secondHalf.forEach(function (s) { secondAvg += s; });
-      secondAvg = secondHalf.length ? secondAvg / secondHalf.length : 0;
-
-      var trendDiff = secondAvg - firstAvg;
-      var scoringTrend = Math.abs(trendDiff) < 5 ? 'stable' : (trendDiff > 0 ? 'rising' : 'falling');
-
-      // Expected wins: weeks where score > league median
-      var expectedWins = 0;
-      td.scores.forEach(function (s) {
-        if (s > leagueMedian) { expectedWins++; }
-      });
-
-      var luckFactor = td.wins - expectedWins;
-      var consistencyRating = stdDev < 12 ? 'High' : (stdDev < 20 ? 'Medium' : 'Low');
-
-      trends.push({
-        team_name: td.team_name,
-        manager_name: td.manager_name,
-        scoring_trend: scoringTrend,
-        avg_weekly_score: avg,
-        std_dev: stdDev,
-        consistency_rating: consistencyRating,
-        expected_wins: expectedWins,
-        actual_wins: td.wins,
-        luck_factor: luckFactor
-      });
-    });
-
-    trends.sort(function (a, b) { return b.avg_weekly_score - a.avg_weekly_score; });
-    return trends;
-
+    return computeSeasonTrends_(data);
   } catch (err) {
     Logger.log('[getSeasonTrends_] Error: ' + err.message);
     return null;
@@ -1380,11 +1402,137 @@ function getTopWaiverPickupsForWeek_(week, limit, leagueKey, rosterTeams) {
   return rows.slice(0, limit || 3);
 }
 
-function buildLeagueSnapshot_(league) {
+/**
+ * Fetches and assembles all data for a league's weekly snapshot — no HTML.
+ * Separated from rendering so the render path is unit-testable and the I/O
+ * orchestration lives in one place. Also drives Supabase persistence as a
+ * side effect (persisting the completed week before trends are computed).
+ *
+ * @param {{league_key: string, name: string}} league
+ * @returns {Object} Plain data object consumed by renderSnapshotHtml_().
+ *   Notable fields: standings, currentWeek, completedWeek, seasonStarted,
+ *   seasonTrends, powerRankings, highlights, benchSummary, waiverPickups,
+ *   positions, topByPosition, projections, error.
+ */
+function fetchSnapshotData_(league) {
   var leagueKey = league.league_key;
   var leagueName = league.name;
 
-  var rows = getLeagueStandings_(leagueKey);
+  var data = {
+    leagueKey: leagueKey,
+    leagueName: leagueName,
+    standings: null,
+    currentWeek: null,
+    completedWeek: null,
+    seasonStarted: false,
+    seasonTrends: null,
+    powerRankings: null,
+    highlights: null,
+    benchSummary: null,
+    waiverPickups: null,
+    positions: ['QB', 'WR', 'RB', 'TE', 'K', 'DEF'],
+    topByPosition: null,
+    projections: null,
+    error: null
+  };
+
+  data.standings = getLeagueStandings_(leagueKey);
+  if (!data.standings || !data.standings.length) {
+    return data;
+  }
+
+  // Determine current/completed week and persist the completed week BEFORE fetching
+  // Season Trends, so the trends table includes the most recent completed week.
+  var sharedScoreboard = null;
+  var sharedWeekScores = null;
+  try {
+    data.currentWeek = getCurrentWeek_(leagueKey);
+    if (data.currentWeek >= 2) {
+      data.completedWeek = data.currentWeek - 1;
+      try {
+        sharedScoreboard = fetchWeekScoreboard_(data.completedWeek, leagueKey);
+        sharedWeekScores = getWeekTeamScores_(data.completedWeek, leagueKey, sharedScoreboard);
+      } catch (sbErr) {
+        Logger.log('[fetchSnapshotData_] Scoreboard fetch failed: ' + sbErr.message);
+      }
+      if (isSupabaseConfigured_() && sharedWeekScores) {
+        try {
+          var weeklyScoreMap = {};
+          sharedWeekScores.forEach(function (t) { weeklyScoreMap[t.team_name] = t.points; });
+          persistWeeklySnapshot_(leagueKey, data.completedWeek, data.standings, weeklyScoreMap);
+        } catch (persistErr) {
+          Logger.log('[fetchSnapshotData_] Supabase persistence failed: ' + persistErr.message);
+        }
+      }
+    }
+  } catch (weekErr) {
+    Logger.log('[fetchSnapshotData_] Current week lookup failed: ' + weekErr.message);
+  }
+
+  // Season-Long Trends (requires Supabase with 3+ weeks of data).
+  // Runs AFTER persistWeeklySnapshot_ above so trends include the current completed week.
+  try {
+    data.seasonTrends = getSeasonTrends_(leagueKey);
+  } catch (trendErr) {
+    Logger.log('[fetchSnapshotData_] Season trends failed: ' + trendErr.message);
+  }
+
+  if (data.currentWeek === null || isNaN(data.currentWeek) || data.currentWeek < 2) {
+    Logger.log('[fetchSnapshotData_] Season has not yet started for ' + leagueName + ' (current week: ' + data.currentWeek + '). Skipping weekly highlights.');
+    data.seasonStarted = false;
+    return data;
+  }
+  data.seasonStarted = true;
+
+  try {
+    // Power Rankings (passes pre-fetched completedWeek scores to avoid a redundant scoreboard fetch)
+    try {
+      data.powerRankings = getWeeklyPowerRankings_(data.completedWeek, leagueKey, sharedWeekScores);
+    } catch (prErr) {
+      Logger.log('[fetchSnapshotData_] Power rankings failed: ' + prErr.message);
+    }
+
+    data.highlights = getWeekTeamHighlights_(data.completedWeek, leagueKey, sharedScoreboard);
+    var ownerMap = getPlayerOwnerMap_(leagueKey);
+
+    // Fetch roster data once — shared by bench summary and waiver pickups
+    var sharedRosterTeams = null;
+    try {
+      sharedRosterTeams = fetchWeekRosterTeams_(data.completedWeek, leagueKey);
+    } catch (rosterErr) {
+      Logger.log('[fetchSnapshotData_] Roster fetch failed: ' + rosterErr.message);
+    }
+
+    data.benchSummary = getWeekBenchSummary_(data.completedWeek, leagueKey, sharedRosterTeams);
+    data.waiverPickups = getTopWaiverPickupsForWeek_(data.completedWeek, 3, leagueKey, sharedRosterTeams);
+    data.topByPosition = getTopPlayersByPositionForWeek_(data.completedWeek, data.positions, 3, ownerMap, leagueKey);
+
+    // Matchup Projections (upcoming week)
+    try {
+      data.projections = getWeekMatchups_(data.currentWeek, leagueKey);
+    } catch (projErr) {
+      Logger.log('[fetchSnapshotData_] Matchup projections failed: ' + projErr.message);
+    }
+
+  } catch (err) {
+    data.error = err.message;
+  }
+
+  return data;
+}
+
+/**
+ * Renders a league snapshot data object (from fetchSnapshotData_) into styled HTML.
+ * Pure: no I/O and no exceptions thrown for normal/partial data.
+ *
+ * @param {Object} data - Object returned by fetchSnapshotData_().
+ * @returns {string} HTML fragment for one league.
+ */
+function renderSnapshotHtml_(data) {
+  var leagueKey = data.leagueKey;
+  var leagueName = data.leagueName;
+  var rows = data.standings;
+
   if (!rows || !rows.length) {
     return '<p>No standings data to display for ' + escapeHtml_(leagueName) + ' (' + escapeHtml_(leagueKey) + ').</p>';
   }
@@ -1420,112 +1568,73 @@ function buildLeagueSnapshot_(league) {
   });
   h.push('</table>');
 
-  // Determine current/completed week and persist the completed week BEFORE fetching
-  // Season Trends, so the trends table includes the most recent completed week.
-  var currentWeek = null;
-  var completedWeek = null;
-  var sharedScoreboard = null;
-  var sharedWeekScores = null;
-  try {
-    currentWeek = getCurrentWeek_(leagueKey);
-    if (currentWeek >= 2) {
-      completedWeek = currentWeek - 1;
-      try {
-        sharedScoreboard = fetchWeekScoreboard_(completedWeek, leagueKey);
-        sharedWeekScores = getWeekTeamScores_(completedWeek, leagueKey, sharedScoreboard);
-      } catch (sbErr) {
-        Logger.log('[buildLeagueSnapshot_] Scoreboard fetch failed: ' + sbErr.message);
-      }
-      if (isSupabaseConfigured_() && sharedWeekScores) {
-        try {
-          var weeklyScoreMap = {};
-          sharedWeekScores.forEach(function (t) { weeklyScoreMap[t.team_name] = t.points; });
-          persistWeeklySnapshot_(leagueKey, completedWeek, rows, weeklyScoreMap);
-        } catch (persistErr) {
-          Logger.log('[buildLeagueSnapshot_] Supabase persistence failed: ' + persistErr.message);
-        }
-      }
-    }
-  } catch (weekErr) {
-    Logger.log('[buildLeagueSnapshot_] Current week lookup failed: ' + weekErr.message);
+  // Season-Long Trends
+  var seasonTrends = data.seasonTrends;
+  if (seasonTrends && seasonTrends.length) {
+    h.push('<h3 ' + sectionTitle + '>Season Trends</h3>');
+    h.push('<table ' + ts + '>');
+    h.push('<tr><th ' + thStyle + '>Team</th><th ' + thStyle + '>Trend</th><th ' + thStyle + '>Avg Score</th><th ' + thStyle + '>Consistency</th><th ' + thStyle + '>Luck</th></tr>');
+    seasonTrends.forEach(function (t, idx) {
+      var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
+      var trendIcon = t.scoring_trend === 'rising' ? '<span style="color:#27ae60;">&#9650; Rising</span>'
+                    : t.scoring_trend === 'falling' ? '<span style="color:#e74c3c;">&#9660; Falling</span>'
+                    : '<span style="color:#999;">&mdash; Stable</span>';
+      var luckLabel = t.luck_factor > 0 ? '<span style="color:#27ae60;">+' + t.luck_factor + ' Lucky</span>'
+                    : t.luck_factor < 0 ? '<span style="color:#e74c3c;">' + t.luck_factor + ' Unlucky</span>'
+                    : '<span style="color:#999;">Even</span>';
+      h.push('<tr' + rowBg + '>');
+      h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(t.team_name) + '</strong></td>');
+      h.push('<td ' + tdStyle + '>' + trendIcon + '</td>');
+      h.push('<td ' + tdStyle + '>' + t.avg_weekly_score.toFixed(1) + '</td>');
+      h.push('<td ' + tdStyle + '>' + t.consistency_rating + ' (' + t.std_dev.toFixed(1) + ')</td>');
+      h.push('<td ' + tdStyle + '>' + luckLabel + '</td>');
+      h.push('</tr>');
+    });
+    h.push('</table>');
+    h.push('<p style="font-size:11px;color:#888;margin:4px 0;">Luck = actual wins minus expected wins (weeks scoring above league median). Consistency = std deviation of weekly scores.</p>');
   }
 
-  // Season-Long Trends (requires Supabase with 3+ weeks of data).
-  // Runs AFTER persistWeeklySnapshot_ above so trends include the current completed week.
-  try {
-    var seasonTrends = getSeasonTrends_(leagueKey);
-    if (seasonTrends && seasonTrends.length) {
-      h.push('<h3 ' + sectionTitle + '>Season Trends</h3>');
-      h.push('<table ' + ts + '>');
-      h.push('<tr><th ' + thStyle + '>Team</th><th ' + thStyle + '>Trend</th><th ' + thStyle + '>Avg Score</th><th ' + thStyle + '>Consistency</th><th ' + thStyle + '>Luck</th></tr>');
-      seasonTrends.forEach(function (t, idx) {
-        var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        var trendIcon = t.scoring_trend === 'rising' ? '<span style="color:#27ae60;">&#9650; Rising</span>'
-                      : t.scoring_trend === 'falling' ? '<span style="color:#e74c3c;">&#9660; Falling</span>'
-                      : '<span style="color:#999;">&mdash; Stable</span>';
-        var luckLabel = t.luck_factor > 0 ? '<span style="color:#27ae60;">+' + t.luck_factor + ' Lucky</span>'
-                      : t.luck_factor < 0 ? '<span style="color:#e74c3c;">' + t.luck_factor + ' Unlucky</span>'
-                      : '<span style="color:#999;">Even</span>';
-        h.push('<tr' + rowBg + '>');
-        h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(t.team_name) + '</strong></td>');
-        h.push('<td ' + tdStyle + '>' + trendIcon + '</td>');
-        h.push('<td ' + tdStyle + '>' + t.avg_weekly_score.toFixed(1) + '</td>');
-        h.push('<td ' + tdStyle + '>' + t.consistency_rating + ' (' + t.std_dev.toFixed(1) + ')</td>');
-        h.push('<td ' + tdStyle + '>' + luckLabel + '</td>');
-        h.push('</tr>');
-      });
-      h.push('</table>');
-      h.push('<p style="font-size:11px;color:#888;margin:4px 0;">Luck = actual wins minus expected wins (weeks scoring above league median). Consistency = std deviation of weekly scores.</p>');
-    }
-  } catch (trendErr) {
-    Logger.log('[buildLeagueSnapshot_] Season trends failed: ' + trendErr.message);
+  if (!data.seasonStarted) {
+    h.push('<p><em>Season has not yet started. Check back after Week 1.</em></p>');
+    return h.join('');
   }
 
-  try {
-    if (currentWeek === null || isNaN(currentWeek) || currentWeek < 2) {
-      Logger.log('[buildLeagueSnapshot_] Season has not yet started for ' + leagueName + ' (current week: ' + currentWeek + '). Skipping weekly highlights.');
-      h.push('<p><em>Season has not yet started. Check back after Week 1.</em></p>');
-      return h.join('');
-    }
+  var completedWeek = data.completedWeek;
+  var currentWeek = data.currentWeek;
 
-    h.push('<h3 ' + sectionTitle + '>Week ' + completedWeek + ' Highlights</h3>');
+  h.push('<h3 ' + sectionTitle + '>Week ' + completedWeek + ' Highlights</h3>');
 
-    // Power Rankings (passes pre-fetched completedWeek scores to avoid a redundant scoreboard fetch)
-    try {
-      var powerRankings = getWeeklyPowerRankings_(completedWeek, leagueKey, sharedWeekScores);
-      if (powerRankings && powerRankings.length) {
-        var windowSize = Math.min(3, completedWeek);
-        h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Power Rankings (Last ' + windowSize + ' Week' + (windowSize > 1 ? 's' : '') + ' Avg)</h4>');
-        h.push('<table ' + ts + '>');
-        h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Trend</th><th ' + thStyle + '>Team</th><th ' + thStyle + '>' + windowSize + '-Wk Avg</th><th ' + thStyle + '>Wk ' + completedWeek + '</th></tr>');
-        powerRankings.forEach(function (r, idx) {
-          var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-          var trendArrow = r.trend === 'up' ? '<span style="color:#27ae60;">&#9650;</span>'
-                         : r.trend === 'down' ? '<span style="color:#e74c3c;">&#9660;</span>'
-                         : '<span style="color:#999;">&mdash;</span>';
-          var trendDetail = '';
-          if (r.prev_rank !== null && r.prev_rank !== r.current_rank) {
-            var diff = Math.abs(r.prev_rank - r.current_rank);
-            trendDetail = ' <span style="font-size:11px;color:#888;">(' + (r.trend === 'up' ? '+' : '-') + diff + ')</span>';
-          }
-          var owner = r.manager_name ? ' (' + escapeHtml_(r.manager_name) + ')' : '';
-          h.push('<tr' + rowBg + '>');
-          h.push('<td ' + tdStyle + '>' + r.current_rank + '</td>');
-          h.push('<td ' + tdStyle + ' style="text-align:center;">' + trendArrow + trendDetail + '</td>');
-          h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(r.team_name) + '</strong>' + owner + '</td>');
-          h.push('<td ' + tdStyle + '>' + r.avg_points.toFixed(1) + '</td>');
-          h.push('<td ' + tdStyle + '>' + r.this_week_points.toFixed(1) + '</td>');
-          h.push('</tr>');
-        });
-        h.push('</table>');
+  // Power Rankings
+  var powerRankings = data.powerRankings;
+  if (powerRankings && powerRankings.length) {
+    var windowSize = Math.min(3, completedWeek);
+    h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Power Rankings (Last ' + windowSize + ' Week' + (windowSize > 1 ? 's' : '') + ' Avg)</h4>');
+    h.push('<table ' + ts + '>');
+    h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Trend</th><th ' + thStyle + '>Team</th><th ' + thStyle + '>' + windowSize + '-Wk Avg</th><th ' + thStyle + '>Wk ' + completedWeek + '</th></tr>');
+    powerRankings.forEach(function (r, idx) {
+      var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
+      var trendArrow = r.trend === 'up' ? '<span style="color:#27ae60;">&#9650;</span>'
+                     : r.trend === 'down' ? '<span style="color:#e74c3c;">&#9660;</span>'
+                     : '<span style="color:#999;">&mdash;</span>';
+      var trendDetail = '';
+      if (r.prev_rank !== null && r.prev_rank !== r.current_rank) {
+        var diff = Math.abs(r.prev_rank - r.current_rank);
+        trendDetail = ' <span style="font-size:11px;color:#888;">(' + (r.trend === 'up' ? '+' : '-') + diff + ')</span>';
       }
-    } catch (prErr) {
-      Logger.log('[buildLeagueSnapshot_] Power rankings failed: ' + prErr.message);
-    }
+      var owner = r.manager_name ? ' (' + escapeHtml_(r.manager_name) + ')' : '';
+      h.push('<tr' + rowBg + '>');
+      h.push('<td ' + tdStyle + '>' + r.current_rank + '</td>');
+      h.push('<td ' + tdStyle + ' style="text-align:center;">' + trendArrow + trendDetail + '</td>');
+      h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(r.team_name) + '</strong>' + owner + '</td>');
+      h.push('<td ' + tdStyle + '>' + r.avg_points.toFixed(1) + '</td>');
+      h.push('<td ' + tdStyle + '>' + r.this_week_points.toFixed(1) + '</td>');
+      h.push('</tr>');
+    });
+    h.push('</table>');
+  }
 
-    var highlights = getWeekTeamHighlights_(completedWeek, leagueKey, sharedScoreboard);
-    var ownerMap = getPlayerOwnerMap_(leagueKey);
-
+  var highlights = data.highlights;
+  if (highlights) {
     // Top 3 Highest Scoring Teams
     if (highlights.topTeams && highlights.topTeams.length) {
       h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Top 3 Highest Scoring Teams</h4>');
@@ -1559,91 +1668,90 @@ function buildLeagueSnapshot_(league) {
         '<strong>' + escapeHtml_(bb.loser.team_name) + '</strong> lost to <strong>' + escapeHtml_(bb.winner.team_name) + '</strong> ' +
         bb.loser.points.toFixed(1) + ' to ' + bb.winner.points.toFixed(1) + ' (-' + bb.margin.toFixed(1) + ')</p>');
     }
+  }
 
-    // Fetch roster data once — shared by bench summary and waiver pickups
-    var sharedRosterTeams = null;
-    try {
-      sharedRosterTeams = fetchWeekRosterTeams_(completedWeek, leagueKey);
-    } catch (rosterErr) {
-      Logger.log('[buildLeagueSnapshot_] Roster fetch failed: ' + rosterErr.message);
+  // Bench Points
+  var benchSummary = data.benchSummary;
+  if (benchSummary) {
+    h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Most Points Left on the Bench</h4>');
+    var detail = '';
+    if (benchSummary.topBench && benchSummary.topBench.length) {
+      detail = benchSummary.topBench.map(function (bp) {
+        return escapeHtml_(bp.name) + ' ' + bp.points.toFixed(1);
+      }).join(', ');
     }
+    h.push('<p style="margin:4px 0;padding:8px 12px;background:#f8d7da;border-left:4px solid #dc3545;font-size:14px;">' +
+      '<strong>' + escapeHtml_(benchSummary.team_name) + '</strong> &mdash; ' + benchSummary.totalPoints.toFixed(1) + ' pts on bench' +
+      (detail ? ' (' + detail + ')' : '') + '</p>');
+  }
 
-    // Bench Points
-    var benchSummary = getWeekBenchSummary_(completedWeek, leagueKey, sharedRosterTeams);
-    if (benchSummary) {
-      h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Most Points Left on the Bench</h4>');
-      var detail = '';
-      if (benchSummary.topBench && benchSummary.topBench.length) {
-        detail = benchSummary.topBench.map(function (bp) {
-          return escapeHtml_(bp.name) + ' ' + bp.points.toFixed(1);
-        }).join(', ');
-      }
-      h.push('<p style="margin:4px 0;padding:8px 12px;background:#f8d7da;border-left:4px solid #dc3545;font-size:14px;">' +
-        '<strong>' + escapeHtml_(benchSummary.team_name) + '</strong> &mdash; ' + benchSummary.totalPoints.toFixed(1) + ' pts on bench' +
-        (detail ? ' (' + detail + ')' : '') + '</p>');
-    }
-
-    // Waiver Pickups (passes shared roster data to avoid a second roster fetch)
-    var waiverPickups = getTopWaiverPickupsForWeek_(completedWeek, 3, leagueKey, sharedRosterTeams);
-    if (waiverPickups && waiverPickups.length) {
-      h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Top Waiver Pickups (Week ' + completedWeek + ')</h4>');
-      h.push('<table ' + ts + '>');
-      h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Player</th><th ' + thStyle + '>Points</th><th ' + thStyle + '>Team</th><th ' + thStyle + '>Added</th></tr>');
-      waiverPickups.forEach(function (w, idx) {
-        var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(w.player_name) + '</td><td ' + tdStyle + '>' + w.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(w.team_name) + '</td><td ' + tdStyle + '>' + (w.addedDay || '') + '</td></tr>');
-      });
-      h.push('</table>');
-    }
-
-    // Position Leaders (single batched fetch, then bucketed by position)
-    var positions = ['QB', 'WR', 'RB', 'TE', 'K', 'DEF'];
-    var topByPosition = getTopPlayersByPositionForWeek_(completedWeek, positions, 3, ownerMap, leagueKey);
-    positions.forEach(function (pos) {
-      var topPlayers = topByPosition[pos];
-      if (!topPlayers || !topPlayers.length) {
-        return;
-      }
-
-      h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Top 3 ' + pos + ' (Week ' + completedWeek + ')</h4>');
-      h.push('<table ' + ts + '>');
-      h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Player</th><th ' + thStyle + '>Points</th><th ' + thStyle + '>Owner</th></tr>');
-      topPlayers.forEach(function (p, idx) {
-        var owner = p.owner && p.owner !== 'FA' ? p.owner : 'FA';
-        var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-        h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(p.name) + '</td><td ' + tdStyle + '>' + p.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(owner) + '</td></tr>');
-      });
-      h.push('</table>');
+  // Waiver Pickups
+  var waiverPickups = data.waiverPickups;
+  if (waiverPickups && waiverPickups.length) {
+    h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Top Waiver Pickups (Week ' + completedWeek + ')</h4>');
+    h.push('<table ' + ts + '>');
+    h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Player</th><th ' + thStyle + '>Points</th><th ' + thStyle + '>Team</th><th ' + thStyle + '>Added</th></tr>');
+    waiverPickups.forEach(function (w, idx) {
+      var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
+      h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(w.player_name) + '</td><td ' + tdStyle + '>' + w.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(w.team_name) + '</td><td ' + tdStyle + '>' + (w.addedDay || '') + '</td></tr>');
     });
+    h.push('</table>');
+  }
 
-    // Matchup Projections (upcoming week)
-    try {
-      var projections = getWeekMatchups_(currentWeek, leagueKey);
-      if (projections && projections.length) {
-        h.push('<h3 ' + sectionTitle + '>Week ' + currentWeek + ' Matchup Projections</h3>');
-        h.push('<table ' + ts + '>');
-        h.push('<tr><th ' + thStyle + '>Matchup</th><th ' + thStyle + '>Projected</th><th ' + thStyle + '>Spread</th><th ' + thStyle + '>Confidence</th></tr>');
-        projections.forEach(function (m, idx) {
-          var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-          var confColor = m.favored_percent >= 65 ? '#27ae60' : (m.favored_percent >= 55 ? '#f39c12' : '#e74c3c');
-          h.push('<tr' + rowBg + '>');
-          h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(m.favored.team_name) + '</strong> vs ' + escapeHtml_(m.underdog.team_name) + '</td>');
-          h.push('<td ' + tdStyle + '>' + m.favored.points.toFixed(1) + ' - ' + m.underdog.points.toFixed(1) + '</td>');
-          h.push('<td ' + tdStyle + '>-' + m.margin.toFixed(1) + '</td>');
-          h.push('<td ' + tdStyle + '><span style="color:' + confColor + ';font-weight:bold;">' + m.favored_percent + '%</span></td>');
-          h.push('</tr>');
-        });
-        h.push('</table>');
-      }
-    } catch (projErr) {
-      Logger.log('[buildLeagueSnapshot_] Matchup projections failed: ' + projErr.message);
+  // Position Leaders
+  var topByPosition = data.topByPosition || {};
+  data.positions.forEach(function (pos) {
+    var topPlayers = topByPosition[pos];
+    if (!topPlayers || !topPlayers.length) {
+      return;
     }
 
-  } catch (err) {
-    h.push('<p style="color:#dc3545;"><strong>Error:</strong> ' + escapeHtml_(err.message) + '</p>');
+    h.push('<h4 style="margin:12px 0 4px 0;color:#555;">Top 3 ' + pos + ' (Week ' + completedWeek + ')</h4>');
+    h.push('<table ' + ts + '>');
+    h.push('<tr><th ' + thStyle + '>#</th><th ' + thStyle + '>Player</th><th ' + thStyle + '>Points</th><th ' + thStyle + '>Owner</th></tr>');
+    topPlayers.forEach(function (p, idx) {
+      var owner = p.owner && p.owner !== 'FA' ? p.owner : 'FA';
+      var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
+      h.push('<tr' + rowBg + '><td ' + tdStyle + '>' + (idx + 1) + '</td><td ' + tdStyle + '>' + escapeHtml_(p.name) + '</td><td ' + tdStyle + '>' + p.points.toFixed(1) + '</td><td ' + tdStyle + '>' + escapeHtml_(owner) + '</td></tr>');
+    });
+    h.push('</table>');
+  });
+
+  // Matchup Projections (upcoming week)
+  var projections = data.projections;
+  if (projections && projections.length) {
+    h.push('<h3 ' + sectionTitle + '>Week ' + currentWeek + ' Matchup Projections</h3>');
+    h.push('<table ' + ts + '>');
+    h.push('<tr><th ' + thStyle + '>Matchup</th><th ' + thStyle + '>Projected</th><th ' + thStyle + '>Spread</th><th ' + thStyle + '>Confidence</th></tr>');
+    projections.forEach(function (m, idx) {
+      var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
+      var confColor = m.favored_percent >= 65 ? '#27ae60' : (m.favored_percent >= 55 ? '#f39c12' : '#e74c3c');
+      h.push('<tr' + rowBg + '>');
+      h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(m.favored.team_name) + '</strong> vs ' + escapeHtml_(m.underdog.team_name) + '</td>');
+      h.push('<td ' + tdStyle + '>' + m.favored.points.toFixed(1) + ' - ' + m.underdog.points.toFixed(1) + '</td>');
+      h.push('<td ' + tdStyle + '>-' + m.margin.toFixed(1) + '</td>');
+      h.push('<td ' + tdStyle + '><span style="color:' + confColor + ';font-weight:bold;">' + m.favored_percent + '%</span></td>');
+      h.push('</tr>');
+    });
+    h.push('</table>');
+  }
+
+  if (data.error) {
+    h.push('<p style="color:#dc3545;"><strong>Error:</strong> ' + escapeHtml_(data.error) + '</p>');
   }
 
   return h.join('');
+}
+
+/**
+ * Assembles a full weekly snapshot for a league as styled HTML.
+ * Thin wrapper: fetches the data, then renders it.
+ *
+ * @param {{league_key: string, name: string}} league
+ * @returns {string} HTML fragment for one league.
+ */
+function buildLeagueSnapshot_(league) {
+  return renderSnapshotHtml_(fetchSnapshotData_(league));
 }
 
 /**
@@ -1769,6 +1877,10 @@ function retryWithBackoff_(fn, maxRetries) {
       Utilities.sleep(backoffMs);
     }
   }
+
+  // Unreachable in practice: the loop either returns fn()'s result or throws on the
+  // final attempt. Explicit throw guards against fn() ever returning undefined silently.
+  throw new Error('[retryWithBackoff_] exhausted without result');
 }
 
 /**
@@ -1857,15 +1969,18 @@ function pullFantasyData() {
     var sections = [];
     var completedWeek = null;
     var failedLeagues = [];
+    var anySeasonActive = false;
 
     for (var i = 0; i < leagues.length; i++) {
       try {
-        var snapshot = buildLeagueSnapshot_(leagues[i]);
-        sections.push(snapshot);
+        var snapshotData = fetchSnapshotData_(leagues[i]);
+        sections.push(renderSnapshotHtml_(snapshotData));
 
-        if (completedWeek === null) {
-          var cw = getCurrentWeek_(leagues[i].league_key);
-          completedWeek = Math.max(1, cw - 1);
+        if (snapshotData.seasonStarted) {
+          anySeasonActive = true;
+        }
+        if (completedWeek === null && snapshotData.completedWeek) {
+          completedWeek = snapshotData.completedWeek;
         }
 
       } catch (err) {
@@ -1874,6 +1989,31 @@ function pullFantasyData() {
         sections.push('<h2 style="color:#dc3545;">' + escapeHtml_(leagues[i].name) + ' (' + escapeHtml_(leagues[i].league_key) + ')</h2><p>Error: ' + escapeHtml_(err.message) + '</p>');
       }
     }
+
+    // Off-season auto-pause: when no league has an active season (every league is
+    // between seasons, currentWeek null/NaN/<2), don't email a near-empty snapshot
+    // every Monday for ~6 months. Send a single "see you next season" notice the
+    // first time, then stay silent until Week 1 returns. Skip suppression if any
+    // league errored — errors still warrant the normal email so they're visible.
+    var props = PropertiesService.getScriptProperties();
+    if (!anySeasonActive && failedLeagues.length === 0) {
+      endTime = Date.now();
+      durationSec = ((endTime - startTime) / 1000).toFixed(2);
+      var alreadyNotified = props.getProperty('OFFSEASON_NOTICE_SENT') === 'true';
+      if (!alreadyNotified) {
+        sendNotificationEmail_('Yahoo Fantasy Snapshot - Off-Season',
+          'All leagues are between seasons (no active week yet).\n\n' +
+          'Weekly snapshots will pause until Week 1 of the next season. See you then!');
+        props.setProperty('OFFSEASON_NOTICE_SENT', 'true');
+        Logger.log('[pullFantasyData] Off-season detected after ' + durationSec + 's — sent one-time off-season notice; pausing weekly emails. API calls: ' + API_CALL_COUNT);
+      } else {
+        Logger.log('[pullFantasyData] Off-season after ' + durationSec + 's — off-season notice already sent; skipping email. API calls: ' + API_CALL_COUNT);
+      }
+      return;
+    }
+    // Season is active (or a league errored) — clear the off-season flag so the
+    // next off-season transition sends a fresh notice.
+    props.deleteProperty('OFFSEASON_NOTICE_SENT');
 
     var htmlBody = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:16px;">';
     htmlBody += sections.join('<hr style="border:none;border-top:2px solid #eee;margin:24px 0;">');
@@ -1992,12 +2132,17 @@ function getYahooAuthUrl_() {
     throw new Error('Missing YAHOO_REDIRECT_URI script property. Set this to your Apps Script Web App URL.');
   }
 
+  // CSRF state nonce: stored in the script cache and validated in doGet on callback.
+  var state = Utilities.getUuid();
+  CacheService.getScriptCache().put('oauth_state', state, 600); // 10-minute TTL
+
   var params = {
     client_id: cfg.yahooClientId,
     redirect_uri: redirectUri,
     response_type: 'code',
     language: 'en-us',
-    scope: 'fspt-r'
+    scope: 'fspt-r',
+    state: state
   };
 
   var query = Object.keys(params)
@@ -2037,6 +2182,15 @@ function doGet(e) {
   var params = e.parameter || {};
 
   if (params.code && params.code.length > 10) {
+    // Validate the CSRF state nonce set by getYahooAuthUrl_().
+    var stateCache = CacheService.getScriptCache();
+    var expectedState = stateCache.get('oauth_state');
+    if (!expectedState || params.state !== expectedState) {
+      Logger.log('[doGet] OAuth state validation failed (missing or mismatched state). Rejecting callback.');
+      return HtmlService.createHtmlOutput('Yahoo authorization failed: invalid or expired state. Please restart the auth flow with startYahooAuth().');
+    }
+    stateCache.remove('oauth_state');
+
     var cfg = getConfig_();
     var redirectUri = PropertiesService.getScriptProperties().getProperty('YAHOO_REDIRECT_URI');
     var tokenUrl = 'https://api.login.yahoo.com/oauth2/get_token';
@@ -2318,6 +2472,43 @@ function runTests() {
   // isSupabaseConfigured_ (read-only, depends on script properties)
   var sbResult = isSupabaseConfigured_();
   assert('isSupabaseConfigured_: returns boolean', typeof sbResult, 'boolean');
+
+  // median_
+  assertApprox('median_: odd length', median_([3, 1, 2]), 2, 0.001);
+  assertApprox('median_: even length', median_([4, 1, 3, 2]), 2.5, 0.001);
+  assertApprox('median_: single element', median_([7]), 7, 0.001);
+  assertApprox('median_: empty returns 0', median_([]), 0, 0.001);
+  assertApprox('median_: does not mutate ordering result', median_([5, 5, 5]), 5, 0.001);
+
+  // computeSeasonTrends_
+  assert('computeSeasonTrends_: null for empty input', computeSeasonTrends_([]), null);
+  var fewWeeks = [
+    { week: 1, team_name: 'Alpha', weekly_score: 100, wins: 1 },
+    { week: 2, team_name: 'Alpha', weekly_score: 110, wins: 1 }
+  ];
+  assert('computeSeasonTrends_: null when fewer than 3 weeks', computeSeasonTrends_(fewWeeks), null);
+
+  // Two teams over 3 weeks. League scores: [100,110,120,90,80,70] → median 95.
+  var trendRows = [
+    { week: 1, team_name: 'Alpha', manager_name: 'A', weekly_score: 100, wins: 2, losses: 1 },
+    { week: 1, team_name: 'Bravo', manager_name: 'B', weekly_score: 90, wins: 1, losses: 2 },
+    { week: 2, team_name: 'Alpha', manager_name: 'A', weekly_score: 110, wins: 2, losses: 1 },
+    { week: 2, team_name: 'Bravo', manager_name: 'B', weekly_score: 80, wins: 1, losses: 2 },
+    { week: 3, team_name: 'Alpha', manager_name: 'A', weekly_score: 120, wins: 2, losses: 1 },
+    { week: 3, team_name: 'Bravo', manager_name: 'B', weekly_score: 70, wins: 1, losses: 2 }
+  ];
+  var trends = computeSeasonTrends_(trendRows);
+  assert('computeSeasonTrends_: returns both teams', trends.length, 2);
+  assert('computeSeasonTrends_: sorted by avg desc (Alpha first)', trends[0].team_name, 'Alpha');
+  assertApprox('computeSeasonTrends_: Alpha avg score', trends[0].avg_weekly_score, 110, 0.001);
+  assertApprox('computeSeasonTrends_: Alpha std dev', trends[0].std_dev, 8.164966, 0.001);
+  assert('computeSeasonTrends_: Alpha trend rising', trends[0].scoring_trend, 'rising');
+  assert('computeSeasonTrends_: Alpha expected wins (weeks > median 95)', trends[0].expected_wins, 3);
+  assert('computeSeasonTrends_: Alpha luck = wins - expected', trends[0].luck_factor, -1);
+  assertApprox('computeSeasonTrends_: Bravo avg score', trends[1].avg_weekly_score, 80, 0.001);
+  assert('computeSeasonTrends_: Bravo trend falling', trends[1].scoring_trend, 'falling');
+  assert('computeSeasonTrends_: Bravo expected wins', trends[1].expected_wins, 0);
+  assert('computeSeasonTrends_: Bravo luck = wins - expected', trends[1].luck_factor, 1);
 
   Logger.log('─────────────────────────────────');
   Logger.log('Tests complete: ' + passed + ' passed, ' + failed + ' failed.');

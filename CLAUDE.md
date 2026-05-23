@@ -66,19 +66,23 @@ Single file: `Code.gs` (~2,300 lines)
 - `isSupabaseConfigured_()` — Returns boolean; gates all Supabase operations
 - `verifySupabaseSchema_()` — Checks `weekly_snapshots` table is accessible; run manually after initial setup or call from `pullFantasyData`
 - `persistWeeklySnapshot_(leagueKey, completedWeek, standings, weeklyScoreMap)` — Upserts standings + scores to Supabase `weekly_snapshots` table
-- `getSeasonTrends_(leagueKey)` — Fetches historical data from Supabase, calculates scoring trends, consistency, luck factor (requires 3+ weeks)
+- `getSeasonTrends_(leagueKey)` — Thin fetch wrapper: pulls historical rows from Supabase, delegates math to `computeSeasonTrends_` (requires 3+ weeks)
+- `computeSeasonTrends_(rows)` — Pure (no I/O): computes scoring trends, consistency, luck factor from raw `weekly_snapshots` rows; unit-tested in `runTests()`
 
 **Utilities:**
 - `flattenYahooMeta_(arr)` — Flattens Yahoo's array-of-single-key-objects into a plain object
 - `parseTeamMeta_(teamWrapper, pointsField)` — Extracts team name, manager, and points from Yahoo team wrapper
 - `getPlayerSlot_(playerArr)` — Extracts selected position/slot from Yahoo player array
 - `validateWeek_(week, functionName)` — Validates week is 1-18
-- `retryWithBackoff_(fn, maxRetries)` — Exponential backoff retry (3 attempts: 2s, 4s, 8s)
+- `median_(values)` — Pure median of a numeric array (non-mutating); used by `computeSeasonTrends_`
+- `retryWithBackoff_(fn, maxRetries)` — Exponential backoff retry (3 attempts: 2s, 4s, 8s); throws explicitly if exhausted without a result
 - `escapeHtml_(str)` — Escapes `&`, `<`, `>`, `"` before inserting into HTML email output
 - `runTests()` — Runs unit tests on pure utilities; results logged to execution log
 
 **Snapshot Assembly:**
-- `buildLeagueSnapshot_(league)` — Assembles full weekly snapshot as styled HTML
+- `fetchSnapshotData_(league)` — I/O orchestration: fetches standings/week/scoreboard, persists to Supabase, gathers highlights/trends/projections; returns a plain data object (no HTML). Sets the `seasonStarted` flag used by the off-season email gate.
+- `renderSnapshotHtml_(data)` — Pure render: turns a `fetchSnapshotData_` object into styled HTML; no I/O, no throws on partial data
+- `buildLeagueSnapshot_(league)` — Thin wrapper: `renderSnapshotHtml_(fetchSnapshotData_(league))`
 
 ## Script Properties (secrets)
 
@@ -97,6 +101,7 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 | `RECIPIENT_EMAIL` | Email address to send snapshots to (required) |
 | `SUPABASE_URL` | Supabase project URL (*optional — enables season trends & persistence*) |
 | `SUPABASE_ANON_KEY` | Supabase anon/publishable key (*optional — enables season trends & persistence*) |
+| `OFFSEASON_NOTICE_SENT` | Internal flag (written by `pullFantasyData`): `'true'` once the one-time off-season pause notice has been sent; cleared automatically when a season becomes active |
 
 ## Yahoo API conventions
 
@@ -196,6 +201,16 @@ Defined at the top of `Code.gs` (lines 1-11):
 | `SLOW_RUN_THRESHOLD_SEC` | 240 | Alert if execution exceeds 4 minutes |
 
 ## Recent Improvements
+
+**2026-05-22 (audit fixes — applied, committed + pushed in-cycle):**
+- 🔴 0 Critical, 🟠 0 High, 🟡 3 Medium (all fixed), ⚪ 4 Low (2 fixed, 2 intentionally skipped) — prior score 95/100
+- ✅ **Medium:** `buildLeagueSnapshot_` god-function split into `fetchSnapshotData_(league)` (I/O) + `renderSnapshotHtml_(data)` (pure HTML); `buildLeagueSnapshot_` is now a thin wrapper. HTML output preserved verbatim (verified via node render smoke test across full / off-season / empty / partial-error paths)
+- ✅ **Medium:** pure `computeSeasonTrends_(rows)` + `median_(values)` extracted from `getSeasonTrends_`; `runTests()` now covers median (even/odd/empty), std-dev, scoring trend, expected wins, and luck factor
+- ✅ **Medium:** off-season auto-pause — `pullFantasyData` suppresses the near-empty weekly email when no league has an active season; sends a single off-season notice (tracked via `OFFSEASON_NOTICE_SENT`), then stays silent until Week 1. Skipped if any league errored.
+- ✅ **Low:** OAuth `state` nonce — `getYahooAuthUrl_` stores a UUID in `CacheService` and `doGet` validates it (CSRF hardening on the one external endpoint)
+- ✅ **Low:** `retryWithBackoff_` now throws explicitly if the loop exhausts without a result (no implicit `undefined`)
+- ✅ **Low:** `.gitignore` adds `.DS_Store` + `.claude/`; `.DS_Store` untracked
+- Skipped (documented): `LockService` around `pullFantasyData` deliberately not added — audit recommends against it (adds lock-timeout failure modes for negligible payoff on a single-user weekly tool, where Supabase upserts are already idempotent)
 
 **2026-05-18 (audit fixes — applied, committed + pushed in-cycle):**
 - 🔴 0 Critical, 🟠 1 High (fixed), 🟡 4 Medium (2 fixed), ⚪ 3 Low (1 fixed) — Score: 95/100 (+4 from 91)
