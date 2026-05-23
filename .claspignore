@@ -1,0 +1,10 @@
+.claude/**
+node_modules/**
+docs/**
+**/.git/**
+.clasp.json
+.clasp.json.example
+.gitignore
+.DS_Store
+README.md
+CLAUDE.md
