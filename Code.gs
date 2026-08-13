@@ -30,6 +30,73 @@ function getRecipientEmail_() {
   return email;
 }
 
+/**
+ * Setup diagnostic — reports which script properties are configured.
+ *
+ * Run this from the IDE after setting Script Properties to confirm the project
+ * is ready before calling startYahooAuth() or pullFantasyData(). Secret values
+ * are never logged, only whether they are present.
+ *
+ * @public
+ * @returns {Object} Map of property name to 'SET' / 'MISSING'
+ */
+function checkSetup() {
+  var props = PropertiesService.getScriptProperties();
+  var required = [
+    'YAHOO_CLIENT_ID',
+    'YAHOO_CLIENT_SECRET',
+    'YAHOO_REDIRECT_URI',
+    'RECIPIENT_EMAIL'
+  ];
+  var authWritten = ['YAHOO_ACCESS_TOKEN', 'YAHOO_REFRESH_TOKEN', 'YAHOO_TOKEN_CREATED_AT'];
+  var optional = ['YAHOO_LEAGUE_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY'];
+
+  var report = {};
+  var missingRequired = [];
+
+  function record(name) {
+    var set = !!props.getProperty(name);
+    report[name] = set ? 'SET' : 'MISSING';
+    return set;
+  }
+
+  Logger.log('=== fantasy-snapshot setup check ===');
+  Logger.log('-- Required (set these yourself) --');
+  required.forEach(function (name) {
+    if (!record(name)) { missingRequired.push(name); }
+    Logger.log(name + ': ' + report[name]);
+  });
+
+  Logger.log('-- OAuth tokens (written by the auth flow) --');
+  var missingAuth = [];
+  authWritten.forEach(function (name) {
+    if (!record(name)) { missingAuth.push(name); }
+    Logger.log(name + ': ' + report[name]);
+  });
+
+  Logger.log('-- Optional --');
+  optional.forEach(function (name) {
+    record(name);
+    Logger.log(name + ': ' + report[name]);
+  });
+
+  Logger.log('-- Verdict --');
+  if (missingRequired.length) {
+    Logger.log('NOT READY. Set these Script Properties first: ' + missingRequired.join(', '));
+  } else if (missingAuth.length) {
+    Logger.log('Properties OK. Next step: run startYahooAuth() and complete the Yahoo OAuth flow in a browser.');
+  } else {
+    Logger.log('READY. You can run pullFantasyData().');
+  }
+
+  var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
+    return t.getHandlerFunction() === 'pullFantasyData';
+  });
+  Logger.log('pullFantasyData triggers installed: ' + triggers.length);
+
+  return report;
+}
+
 // Supabase integration for season-long trend tracking.
 // Used by persistWeeklySnapshot_() and getSeasonTrends_().
 // Requires SUPABASE_URL and SUPABASE_ANON_KEY script properties.

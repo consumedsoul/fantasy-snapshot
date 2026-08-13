@@ -1,10 +1,8 @@
 # fantasy-snapshot
 
-> **⚠️ Retired / Archived.** This project is no longer maintained or running. The live service was
-> migrated to a [Claude Cowork](https://www.anthropic.com/claude) workflow; the Google Apps Script
-> deployment has been torn down. This repository is kept public as a portfolio piece — a self-contained
-> example of an OAuth2 API integration, defensive error handling, and iterative AI-assisted hardening
-> (see [`docs/audits/`](docs/audits/) for the review history). The code below is preserved as-is.
+> **Status: active (revived 2026-08-12).** Previously archived; the Apps Script deployment has been
+> rebuilt and the code redeployed. See [`docs/audits/`](docs/audits/) for the review history.
+> Run `checkSetup()` in the Apps Script IDE to verify configuration before the first run.
 
 Automated Yahoo Fantasy Football weekly snapshot generator built on Google Apps Script.
 

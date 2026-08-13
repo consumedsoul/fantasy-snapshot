@@ -20,6 +20,7 @@ Single file: `Code.gs` (~2,300 lines)
 - `doGet(e)` — OAuth callback handler (Web App endpoint)
 - `debugAllLeaguesRaw()` — Debug helper: logs raw Yahoo API response
 - `debugSnapshotToLog()` — Debug helper: generates snapshot and logs to console (no email)
+- `checkSetup()` — Setup diagnostic: logs which Script Properties are SET/MISSING (never logs values), plus installed `pullFantasyData` trigger count, and a READY / NOT READY verdict
 
 ### Private Helpers (suffix: `_`)
 
@@ -201,6 +202,12 @@ Defined at the top of `Code.gs` (lines 1-11):
 | `SLOW_RUN_THRESHOLD_SEC` | 240 | Alert if execution exceeds 4 minutes |
 
 ## Recent Improvements
+
+**2026-08-12 (revival):**
+- Project un-retired. Apps Script project was blank; `Code.gs` + `appsscript.json` re-pushed via `clasp push` to script ID `1sdSUJHak5FVMt1yxvSW9dFyoF-HRYniTmlg0cMXclfyoF-4m1F4reEw3`
+- ✅ Added `checkSetup()` — reports which Script Properties are set (values never logged) and whether a `pullFantasyData` trigger exists; gives a READY / NOT READY verdict
+- ✅ README retirement notice replaced with active status
+- Note: Script Properties, the Web App deployment, the Yahoo OAuth handshake, and the time-driven trigger must be re-established manually in the IDE — none of them survive in code
 
 **2026-05-22 (audit fixes — applied, committed + pushed in-cycle):**
 - 🔴 0 Critical, 🟠 0 High, 🟡 3 Medium (all fixed), ⚪ 4 Low (2 fixed, 2 intentionally skipped) — prior score 95/100
