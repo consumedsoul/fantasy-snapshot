@@ -5,12 +5,12 @@ Google Apps Script that pulls Yahoo Fantasy Football league data, builds a weekl
 ## Tech stack
 
 - **Runtime:** Google Apps Script (V8)
-- **APIs:** Yahoo Fantasy Sports API v2 (OAuth2), Supabase (PostgREST) - *optional, degrades gracefully when not configured*
+- **APIs:** Yahoo Fantasy Sports API v2 (OAuth2)
 - **Entry point:** `pullFantasyData()` — fetches all leagues, builds snapshots, emails the result
 
 ## Project layout
 
-Single file: `Code.gs` (~2,300 lines)
+Single file: `Code.gs` (~2,200 lines)
 
 ## Function Index
 
@@ -33,7 +33,6 @@ Single file: `Code.gs` (~2,300 lines)
 
 **API Transport:**
 - `yahooApiRequest_(resourcePath, queryParams)` — Generic Yahoo API wrapper with auto-refresh on 401
-- `supabaseRequest_(path, method, payload)` — Generic Supabase PostgREST wrapper (used by persistence and trends)
 
 **League Discovery:**
 - `getAllLeagues_()` — Fetches all NFL leagues for authenticated user
@@ -63,25 +62,17 @@ Single file: `Code.gs` (~2,300 lines)
 - `sendNotificationEmail_(subject, body)` — Sends error notifications (non-throwing)
 - `getRecipientEmail_()` — Gets recipient email from script properties
 
-**Supabase / Persistence:**
-- `isSupabaseConfigured_()` — Returns boolean; gates all Supabase operations
-- `verifySupabaseSchema_()` — Checks `weekly_snapshots` table is accessible; run manually after initial setup or call from `pullFantasyData`
-- `persistWeeklySnapshot_(leagueKey, completedWeek, standings, weeklyScoreMap)` — Upserts standings + scores to Supabase `weekly_snapshots` table
-- `getSeasonTrends_(leagueKey)` — Thin fetch wrapper: pulls historical rows from Supabase, delegates math to `computeSeasonTrends_` (requires 3+ weeks)
-- `computeSeasonTrends_(rows)` — Pure (no I/O): computes scoring trends, consistency, luck factor from raw `weekly_snapshots` rows; unit-tested in `runTests()`
-
 **Utilities:**
 - `flattenYahooMeta_(arr)` — Flattens Yahoo's array-of-single-key-objects into a plain object
 - `parseTeamMeta_(teamWrapper, pointsField)` — Extracts team name, manager, and points from Yahoo team wrapper
 - `getPlayerSlot_(playerArr)` — Extracts selected position/slot from Yahoo player array
 - `validateWeek_(week, functionName)` — Validates week is 1-18
-- `median_(values)` — Pure median of a numeric array (non-mutating); used by `computeSeasonTrends_`
 - `retryWithBackoff_(fn, maxRetries)` — Exponential backoff retry (3 attempts: 2s, 4s, 8s); throws explicitly if exhausted without a result
 - `escapeHtml_(str)` — Escapes `&`, `<`, `>`, `"` before inserting into HTML email output
 - `runTests()` — Runs unit tests on pure utilities; results logged to execution log
 
 **Snapshot Assembly:**
-- `fetchSnapshotData_(league)` — I/O orchestration: fetches standings/week/scoreboard, persists to Supabase, gathers highlights/trends/projections; returns a plain data object (no HTML). Sets the `seasonStarted` flag used by the off-season email gate.
+- `fetchSnapshotData_(league)` — I/O orchestration: fetches standings/week/scoreboard and gathers highlights/projections; returns a plain data object (no HTML). Sets the `seasonStarted` flag used by the off-season email gate.
 - `renderSnapshotHtml_(data)` — Pure render: turns a `fetchSnapshotData_` object into styled HTML; no I/O, no throws on partial data
 - `buildLeagueSnapshot_(league)` — Thin wrapper: `renderSnapshotHtml_(fetchSnapshotData_(league))`
 
@@ -100,8 +91,6 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 | `YAHOO_EXPIRES_IN` | Token TTL in seconds |
 | `YAHOO_TOKEN_CREATED_AT` | Epoch ms when the token was issued |
 | `RECIPIENT_EMAIL` | Email address to send snapshots to (required) |
-| `SUPABASE_URL` | Supabase project URL (*optional — enables season trends & persistence*) |
-| `SUPABASE_ANON_KEY` | Supabase anon/publishable key (*optional — enables season trends & persistence*) |
 | `OFFSEASON_NOTICE_SENT` | Internal flag (written by `pullFantasyData`): `'true'` once the one-time off-season pause notice has been sent; cleared automatically when a season becomes active |
 
 ## Yahoo API conventions
@@ -109,43 +98,6 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 - The Yahoo Fantasy API returns deeply nested, array-of-single-key-objects structures. Use `flattenYahooMeta_(arr)` to flatten these into plain objects. Use `parseTeamMeta_(teamWrapper, pointsField)` to extract team name, manager, and points from team wrappers.
 - Player/team data chunks are batched in groups of 25 (`YAHOO_API_BATCH_SIZE`) to stay within API limits.
 - `yahooApiRequest_()` automatically retries once after a token refresh if a 401 with `token_expired` is returned.
-
-## Supabase Setup (Optional)
-
-To enable season-long trends and data persistence, create a Supabase project and run this SQL:
-
-```sql
-CREATE TABLE weekly_snapshots (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  league_id TEXT NOT NULL,
-  team_id TEXT NOT NULL,
-  team_name TEXT NOT NULL,
-  manager_name TEXT,
-  week INT NOT NULL,
-  rank INT,
-  wins INT,
-  losses INT,
-  ties INT,
-  points_for NUMERIC,
-  points_against NUMERIC,
-  weekly_score NUMERIC,
-  snapshot_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(league_id, team_id, week)
-);
-
-CREATE INDEX idx_weekly_snapshots_league_week ON weekly_snapshots(league_id, week);
-
--- RLS policies (enable RLS first)
-ALTER TABLE weekly_snapshots ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Allow anon insert" ON weekly_snapshots
-  FOR INSERT TO anon WITH CHECK (true);
-
-CREATE POLICY "Allow anon select" ON weekly_snapshots
-  FOR SELECT TO anon USING (true);
-```
-
-Then set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Script Properties. The snapshot will automatically persist data and show season trends after 3+ weeks of data.
 
 ## Running & deploying
 
@@ -179,7 +131,6 @@ Then set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Script Properties. The snapsh
 - Private/internal helpers are suffixed with `_` (e.g. `getConfig_()`). Public entry points: `pullFantasyData`, `startYahooAuth`, `doGet`, `debugAllLeaguesRaw`, `debugSnapshotToLog`.
 - Snapshot output is HTML with inline CSS (for email client compatibility). `sendSnapshotEmail_()` sends both HTML and a plain text fallback.
 - `completedWeek` is always `currentWeek - 1` (the most recently finished week).
-- Supabase integration is optional — when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set, `pullFantasyData()` persists weekly data and `buildLeagueSnapshot_()` shows season trends. All Supabase code degrades gracefully when not configured.
 - Yahoo API batches player data in chunks of 25 to stay within API limits.
 - All error messages follow the format `[FunctionName] Message: details` for easy log filtering.
 - Week parameters are validated (1-18 range) across all functions with `validateWeek_()`.
@@ -202,6 +153,13 @@ Defined at the top of `Code.gs` (lines 1-11):
 | `SLOW_RUN_THRESHOLD_SEC` | 240 | Alert if execution exceeds 4 minutes |
 
 ## Recent Improvements
+
+**2026-08-13 (Supabase removal):**
+- Supabase dropped entirely — the project no longer uses any external datastore
+- Removed: `supabaseRequest_`, `isSupabaseConfigured_`, `verifySupabaseSchema_`, `persistWeeklySnapshot_`, `getSeasonTrends_`, `computeSeasonTrends_`, `median_`, their `runTests()` assertions, the `seasonTrends` field on `fetchSnapshotData_`, and the Season Trends renderer block
+- The **Season Trends** email section (scoring trend / consistency / luck factor) is gone with it — it was the only Supabase-dependent feature. Everything else re-derives from Yahoo per run; power rankings already re-fetch prior weeks directly, so they are unaffected
+- `SUPABASE_URL` / `SUPABASE_ANON_KEY` script properties are no longer read and can be deleted
+- Verified: `renderSnapshotHtml_` output is byte-identical to the prior version across off-season / no-standings / error / full-week paths (differential node render test); `runTests()` passes
 
 **2026-08-12 (revival):**
 - Project un-retired. Apps Script project was blank; `Code.gs` + `appsscript.json` re-pushed via `clasp push` to script ID `1sdSUJHak5FVMt1yxvSW9dFyoF-HRYniTmlg0cMXclfyoF-4m1F4reEw3`

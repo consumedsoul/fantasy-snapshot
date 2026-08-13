@@ -16,8 +16,6 @@ function getConfig_() {
   return {
     yahooClientId: props.getProperty('YAHOO_CLIENT_ID'),
     yahooClientSecret: props.getProperty('YAHOO_CLIENT_SECRET'),
-    supabaseUrl: props.getProperty('SUPABASE_URL'),
-    supabaseAnonKey: props.getProperty('SUPABASE_ANON_KEY'),
     recipientEmail: props.getProperty('RECIPIENT_EMAIL')
   };
 }
@@ -49,7 +47,7 @@ function checkSetup() {
     'RECIPIENT_EMAIL'
   ];
   var authWritten = ['YAHOO_ACCESS_TOKEN', 'YAHOO_REFRESH_TOKEN', 'YAHOO_TOKEN_CREATED_AT'];
-  var optional = ['YAHOO_LEAGUE_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY'];
+  var optional = ['YAHOO_LEAGUE_KEY'];
 
   var report = {};
   var missingRequired = [];
@@ -95,303 +93,6 @@ function checkSetup() {
   Logger.log('pullFantasyData triggers installed: ' + triggers.length);
 
   return report;
-}
-
-// Supabase integration for season-long trend tracking.
-// Used by persistWeeklySnapshot_() and getSeasonTrends_().
-// Requires SUPABASE_URL and SUPABASE_ANON_KEY script properties.
-function supabaseRequest_(path, method, payload) {
-  var cfg = getConfig_();
-  if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
-    throw new Error('[supabaseRequest_] Supabase configuration missing. Check SUPABASE_URL and SUPABASE_ANON_KEY script properties.');
-  }
-
-  var url = cfg.supabaseUrl.replace(/\/$/, '') + path;
-  var options = {
-    method: method || 'get',
-    headers: {
-      'apikey': cfg.supabaseAnonKey,
-      'Authorization': 'Bearer ' + cfg.supabaseAnonKey,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation'
-    },
-    muteHttpExceptions: true
-  };
-
-  if (payload !== undefined && payload !== null) {
-    options.payload = JSON.stringify(payload);
-  }
-
-  // muteHttpExceptions returns a response for HTTP errors (no throw), so explicitly
-  // throw on transient 429/5xx inside the closure to engage retryWithBackoff_.
-  var response = retryWithBackoff_(function() {
-    var res = UrlFetchApp.fetch(url, options);
-    var code = res.getResponseCode();
-    if (code === 429 || code >= 500) {
-      throw new Error('[supabaseRequest_] Retryable HTTP ' + code + ': ' + res.getContentText());
-    }
-    return res;
-  });
-
-  var status = response.getResponseCode();
-  var body = response.getContentText();
-
-  if (status < 200 || status >= 300) {
-    throw new Error('[supabaseRequest_] HTTP ' + status + ': ' + body);
-  }
-
-  return body ? JSON.parse(body) : null;
-}
-
-/**
- * Checks if Supabase credentials are configured in Script Properties.
- * @returns {boolean}
- */
-function isSupabaseConfigured_() {
-  var cfg = getConfig_();
-  return !!(cfg.supabaseUrl && cfg.supabaseAnonKey);
-}
-
-/**
- * Verifies that the required Supabase table exists and is accessible.
- * Run this manually after setting up Supabase credentials to confirm the schema is in place.
- * Also called at the start of pullFantasyData() when Supabase is configured.
- *
- * @returns {boolean} true if the table is accessible, false otherwise
- */
-function verifySupabaseSchema_() {
-  if (!isSupabaseConfigured_()) {
-    Logger.log('[verifySupabaseSchema_] Supabase not configured — skipping.');
-    return false;
-  }
-  try {
-    supabaseRequest_('/rest/v1/weekly_snapshots?limit=1', 'get');
-    Logger.log('[verifySupabaseSchema_] weekly_snapshots table is accessible.');
-    return true;
-  } catch (err) {
-    Logger.log('[verifySupabaseSchema_] Cannot access weekly_snapshots table: ' + err.message +
-      '\nEnsure you have run the SQL schema creation from CLAUDE.md and that RLS policies are set.');
-    return false;
-  }
-}
-
-/**
- * Persists weekly snapshot data to Supabase for season-long trend tracking.
- * Uses upsert (ON CONFLICT DO UPDATE) for idempotency on re-runs.
- *
- * @param {string} leagueKey - The league key
- * @param {number} completedWeek - The completed week number
- * @param {Array<Object>} standings - Standings rows from getLeagueStandings_()
- * @param {Object} [weeklyScoreMap] - Map of team_name -> weekly_score
- */
-function persistWeeklySnapshot_(leagueKey, completedWeek, standings, weeklyScoreMap) {
-  if (!isSupabaseConfigured_()) {
-    return;
-  }
-
-  validateWeek_(completedWeek, 'persistWeeklySnapshot_');
-
-  if (!standings || !standings.length) {
-    Logger.log('[persistWeeklySnapshot_] No standings data to persist.');
-    return;
-  }
-
-  weeklyScoreMap = weeklyScoreMap || {};
-
-  var rows = standings.map(function (s) {
-    return {
-      league_id: leagueKey,
-      team_id: s.team_id,
-      team_name: s.team_name,
-      manager_name: s.manager_name || '',
-      week: completedWeek,
-      rank: s.rank,
-      wins: s.wins,
-      losses: s.losses,
-      ties: s.ties,
-      points_for: s.points_for,
-      points_against: s.points_against,
-      weekly_score: weeklyScoreMap[s.team_name] || null,
-      snapshot_at: new Date().toISOString()
-    };
-  });
-
-  try {
-    var cfg = getConfig_();
-    var url = cfg.supabaseUrl.replace(/\/$/, '') + '/rest/v1/weekly_snapshots';
-    var options = {
-      method: 'post',
-      headers: {
-        'apikey': cfg.supabaseAnonKey,
-        'Authorization': 'Bearer ' + cfg.supabaseAnonKey,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates,return=representation'
-      },
-      payload: JSON.stringify(rows),
-      muteHttpExceptions: true
-    };
-
-    var response = retryWithBackoff_(function () {
-      return UrlFetchApp.fetch(url, options);
-    });
-
-    var status = response.getResponseCode();
-    if (status < 200 || status >= 300) {
-      Logger.log('[persistWeeklySnapshot_] Supabase upsert failed: HTTP ' + status + ': ' + response.getContentText());
-    } else {
-      Logger.log('[persistWeeklySnapshot_] Persisted ' + rows.length + ' rows for ' + leagueKey + ' week ' + completedWeek);
-    }
-  } catch (err) {
-    Logger.log('[persistWeeklySnapshot_] Error: ' + err.message);
-  }
-}
-
-/**
- * Returns the median of a numeric array. Returns 0 for an empty/missing array.
- * Does not mutate the input.
- * @param {Array<number>} values
- * @returns {number}
- */
-function median_(values) {
-  if (!values || !values.length) {
-    return 0;
-  }
-  var arr = values.slice().sort(function (a, b) { return a - b; });
-  var mid = Math.floor(arr.length / 2);
-  return arr.length % 2 !== 0 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
-}
-
-/**
- * Computes per-team season trends from raw weekly_snapshots rows.
- * Pure (no I/O) so it can be unit-tested. Returns null when fewer than 3 distinct
- * weeks of data are present, or when input is empty.
- *
- * @param {Array<Object>} rows - weekly_snapshots rows ordered by week asc; each:
- *   {week, team_name, manager_name, weekly_score, wins, losses, ...}
- * @returns {Array<{team_name: string, scoring_trend: string, avg_weekly_score: number,
- *   std_dev: number, consistency_rating: string, expected_wins: number,
- *   actual_wins: number, luck_factor: number}>|null}
- */
-function computeSeasonTrends_(rows) {
-  if (!rows || !rows.length) {
-    return null;
-  }
-
-  // Need at least 3 weeks of data for meaningful trends
-  var weeks = {};
-  rows.forEach(function (row) { weeks[row.week] = true; });
-  if (Object.keys(weeks).length < 3) {
-    return null;
-  }
-
-  // Group by team
-  var teamData = {};
-  rows.forEach(function (row) {
-    if (!teamData[row.team_name]) {
-      teamData[row.team_name] = {
-        team_name: row.team_name,
-        manager_name: row.manager_name || '',
-        scores: [],
-        wins: 0,
-        losses: 0
-      };
-    }
-    if (row.weekly_score !== null && row.weekly_score !== undefined) {
-      teamData[row.team_name].scores.push(Number(row.weekly_score));
-    }
-    teamData[row.team_name].wins = row.wins || 0;
-    teamData[row.team_name].losses = row.losses || 0;
-  });
-
-  // Calculate league median for luck factor
-  var allScores = [];
-  rows.forEach(function (row) {
-    if (row.weekly_score !== null && row.weekly_score !== undefined) {
-      allScores.push(Number(row.weekly_score));
-    }
-  });
-  var leagueMedian = median_(allScores);
-
-  // Calculate trends per team
-  var trends = [];
-  Object.keys(teamData).forEach(function (teamName) {
-    var td = teamData[teamName];
-    if (td.scores.length < 2) {
-      return;
-    }
-
-    var sum = 0;
-    td.scores.forEach(function (s) { sum += s; });
-    var avg = sum / td.scores.length;
-
-    var sqDiffSum = 0;
-    td.scores.forEach(function (s) { sqDiffSum += Math.pow(s - avg, 2); });
-    var stdDev = Math.sqrt(sqDiffSum / td.scores.length);
-
-    // Scoring trend: compare second half to first half
-    var halfIdx = Math.floor(td.scores.length / 2);
-    var firstHalf = td.scores.slice(0, halfIdx);
-    var secondHalf = td.scores.slice(halfIdx);
-    var firstAvg = 0, secondAvg = 0;
-    firstHalf.forEach(function (s) { firstAvg += s; });
-    firstAvg = firstHalf.length ? firstAvg / firstHalf.length : 0;
-    secondHalf.forEach(function (s) { secondAvg += s; });
-    secondAvg = secondHalf.length ? secondAvg / secondHalf.length : 0;
-
-    var trendDiff = secondAvg - firstAvg;
-    var scoringTrend = Math.abs(trendDiff) < 5 ? 'stable' : (trendDiff > 0 ? 'rising' : 'falling');
-
-    // Expected wins: weeks where score > league median
-    var expectedWins = 0;
-    td.scores.forEach(function (s) {
-      if (s > leagueMedian) { expectedWins++; }
-    });
-
-    var luckFactor = td.wins - expectedWins;
-    var consistencyRating = stdDev < 12 ? 'High' : (stdDev < 20 ? 'Medium' : 'Low');
-
-    trends.push({
-      team_name: td.team_name,
-      manager_name: td.manager_name,
-      scoring_trend: scoringTrend,
-      avg_weekly_score: avg,
-      std_dev: stdDev,
-      consistency_rating: consistencyRating,
-      expected_wins: expectedWins,
-      actual_wins: td.wins,
-      luck_factor: luckFactor
-    });
-  });
-
-  trends.sort(function (a, b) { return b.avg_weekly_score - a.avg_weekly_score; });
-  return trends;
-}
-
-/**
- * Fetches all weekly snapshots for a league from Supabase and calculates trends.
- * Thin fetch wrapper around the pure computeSeasonTrends_(). Requires 3+ weeks of
- * data. Returns null if Supabase not configured or insufficient data.
- *
- * @param {string} leagueKey - The league key
- * @returns {Array<Object>|null}
- */
-function getSeasonTrends_(leagueKey) {
-  if (!isSupabaseConfigured_()) {
-    return null;
-  }
-
-  leagueKey = leagueKey || getLeagueKey_();
-
-  try {
-    var data = supabaseRequest_(
-      '/rest/v1/weekly_snapshots?league_id=eq.' + encodeURIComponent(leagueKey) + '&order=week.asc',
-      'get'
-    );
-    return computeSeasonTrends_(data);
-  } catch (err) {
-    Logger.log('[getSeasonTrends_] Error: ' + err.message);
-    return null;
-  }
 }
 
 function getLeagueKey_() {
@@ -1472,13 +1173,12 @@ function getTopWaiverPickupsForWeek_(week, limit, leagueKey, rosterTeams) {
 /**
  * Fetches and assembles all data for a league's weekly snapshot — no HTML.
  * Separated from rendering so the render path is unit-testable and the I/O
- * orchestration lives in one place. Also drives Supabase persistence as a
- * side effect (persisting the completed week before trends are computed).
+ * orchestration lives in one place.
  *
  * @param {{league_key: string, name: string}} league
  * @returns {Object} Plain data object consumed by renderSnapshotHtml_().
  *   Notable fields: standings, currentWeek, completedWeek, seasonStarted,
- *   seasonTrends, powerRankings, highlights, benchSummary, waiverPickups,
+ *   powerRankings, highlights, benchSummary, waiverPickups,
  *   positions, topByPosition, projections, error.
  */
 function fetchSnapshotData_(league) {
@@ -1492,7 +1192,6 @@ function fetchSnapshotData_(league) {
     currentWeek: null,
     completedWeek: null,
     seasonStarted: false,
-    seasonTrends: null,
     powerRankings: null,
     highlights: null,
     benchSummary: null,
@@ -1508,8 +1207,8 @@ function fetchSnapshotData_(league) {
     return data;
   }
 
-  // Determine current/completed week and persist the completed week BEFORE fetching
-  // Season Trends, so the trends table includes the most recent completed week.
+  // Determine current/completed week and pre-fetch the completed week's scoreboard
+  // once, so downstream highlights/scores/power-rankings can share it.
   var sharedScoreboard = null;
   var sharedWeekScores = null;
   try {
@@ -1522,26 +1221,9 @@ function fetchSnapshotData_(league) {
       } catch (sbErr) {
         Logger.log('[fetchSnapshotData_] Scoreboard fetch failed: ' + sbErr.message);
       }
-      if (isSupabaseConfigured_() && sharedWeekScores) {
-        try {
-          var weeklyScoreMap = {};
-          sharedWeekScores.forEach(function (t) { weeklyScoreMap[t.team_name] = t.points; });
-          persistWeeklySnapshot_(leagueKey, data.completedWeek, data.standings, weeklyScoreMap);
-        } catch (persistErr) {
-          Logger.log('[fetchSnapshotData_] Supabase persistence failed: ' + persistErr.message);
-        }
-      }
     }
   } catch (weekErr) {
     Logger.log('[fetchSnapshotData_] Current week lookup failed: ' + weekErr.message);
-  }
-
-  // Season-Long Trends (requires Supabase with 3+ weeks of data).
-  // Runs AFTER persistWeeklySnapshot_ above so trends include the current completed week.
-  try {
-    data.seasonTrends = getSeasonTrends_(leagueKey);
-  } catch (trendErr) {
-    Logger.log('[fetchSnapshotData_] Season trends failed: ' + trendErr.message);
   }
 
   if (data.currentWeek === null || isNaN(data.currentWeek) || data.currentWeek < 2) {
@@ -1634,32 +1316,6 @@ function renderSnapshotHtml_(data) {
     h.push('</tr>');
   });
   h.push('</table>');
-
-  // Season-Long Trends
-  var seasonTrends = data.seasonTrends;
-  if (seasonTrends && seasonTrends.length) {
-    h.push('<h3 ' + sectionTitle + '>Season Trends</h3>');
-    h.push('<table ' + ts + '>');
-    h.push('<tr><th ' + thStyle + '>Team</th><th ' + thStyle + '>Trend</th><th ' + thStyle + '>Avg Score</th><th ' + thStyle + '>Consistency</th><th ' + thStyle + '>Luck</th></tr>');
-    seasonTrends.forEach(function (t, idx) {
-      var rowBg = idx % 2 === 0 ? '' : ' style="background:#f9f9f9;"';
-      var trendIcon = t.scoring_trend === 'rising' ? '<span style="color:#27ae60;">&#9650; Rising</span>'
-                    : t.scoring_trend === 'falling' ? '<span style="color:#e74c3c;">&#9660; Falling</span>'
-                    : '<span style="color:#999;">&mdash; Stable</span>';
-      var luckLabel = t.luck_factor > 0 ? '<span style="color:#27ae60;">+' + t.luck_factor + ' Lucky</span>'
-                    : t.luck_factor < 0 ? '<span style="color:#e74c3c;">' + t.luck_factor + ' Unlucky</span>'
-                    : '<span style="color:#999;">Even</span>';
-      h.push('<tr' + rowBg + '>');
-      h.push('<td ' + tdStyle + '><strong>' + escapeHtml_(t.team_name) + '</strong></td>');
-      h.push('<td ' + tdStyle + '>' + trendIcon + '</td>');
-      h.push('<td ' + tdStyle + '>' + t.avg_weekly_score.toFixed(1) + '</td>');
-      h.push('<td ' + tdStyle + '>' + t.consistency_rating + ' (' + t.std_dev.toFixed(1) + ')</td>');
-      h.push('<td ' + tdStyle + '>' + luckLabel + '</td>');
-      h.push('</tr>');
-    });
-    h.push('</table>');
-    h.push('<p style="font-size:11px;color:#888;margin:4px 0;">Luck = actual wins minus expected wins (weeks scoring above league median). Consistency = std deviation of weekly scores.</p>');
-  }
 
   if (!data.seasonStarted) {
     h.push('<p><em>Season has not yet started. Check back after Week 1.</em></p>');
@@ -2019,13 +1675,6 @@ function pullFantasyData() {
   API_CALL_COUNT = 0;
 
   try {
-    if (isSupabaseConfigured_() && !verifySupabaseSchema_()) {
-      sendNotificationEmail_('Fantasy Snapshot - Supabase Schema Missing',
-        'Supabase is configured but the weekly_snapshots table is not accessible.\n' +
-        'Season trends and persistence will be skipped until the schema is created.\n\n' +
-        'See CLAUDE.md for the SQL schema creation steps.');
-    }
-
     var leagues = getAllLeagues_();
     if (!leagues || !leagues.length) {
       Logger.log('No leagues found for this Yahoo account.');
@@ -2535,47 +2184,6 @@ function runTests() {
   assert('getPlayerSlot_: returns BN', getPlayerSlot_(benchPlayer), 'BN');
   var qbPlayer = [{ player_key: 'x' }, { selected_position: [{ week: 1, position: 'QB' }] }];
   assert('getPlayerSlot_: returns QB', getPlayerSlot_(qbPlayer), 'QB');
-
-  // isSupabaseConfigured_ (read-only, depends on script properties)
-  var sbResult = isSupabaseConfigured_();
-  assert('isSupabaseConfigured_: returns boolean', typeof sbResult, 'boolean');
-
-  // median_
-  assertApprox('median_: odd length', median_([3, 1, 2]), 2, 0.001);
-  assertApprox('median_: even length', median_([4, 1, 3, 2]), 2.5, 0.001);
-  assertApprox('median_: single element', median_([7]), 7, 0.001);
-  assertApprox('median_: empty returns 0', median_([]), 0, 0.001);
-  assertApprox('median_: does not mutate ordering result', median_([5, 5, 5]), 5, 0.001);
-
-  // computeSeasonTrends_
-  assert('computeSeasonTrends_: null for empty input', computeSeasonTrends_([]), null);
-  var fewWeeks = [
-    { week: 1, team_name: 'Alpha', weekly_score: 100, wins: 1 },
-    { week: 2, team_name: 'Alpha', weekly_score: 110, wins: 1 }
-  ];
-  assert('computeSeasonTrends_: null when fewer than 3 weeks', computeSeasonTrends_(fewWeeks), null);
-
-  // Two teams over 3 weeks. League scores: [100,110,120,90,80,70] → median 95.
-  var trendRows = [
-    { week: 1, team_name: 'Alpha', manager_name: 'A', weekly_score: 100, wins: 2, losses: 1 },
-    { week: 1, team_name: 'Bravo', manager_name: 'B', weekly_score: 90, wins: 1, losses: 2 },
-    { week: 2, team_name: 'Alpha', manager_name: 'A', weekly_score: 110, wins: 2, losses: 1 },
-    { week: 2, team_name: 'Bravo', manager_name: 'B', weekly_score: 80, wins: 1, losses: 2 },
-    { week: 3, team_name: 'Alpha', manager_name: 'A', weekly_score: 120, wins: 2, losses: 1 },
-    { week: 3, team_name: 'Bravo', manager_name: 'B', weekly_score: 70, wins: 1, losses: 2 }
-  ];
-  var trends = computeSeasonTrends_(trendRows);
-  assert('computeSeasonTrends_: returns both teams', trends.length, 2);
-  assert('computeSeasonTrends_: sorted by avg desc (Alpha first)', trends[0].team_name, 'Alpha');
-  assertApprox('computeSeasonTrends_: Alpha avg score', trends[0].avg_weekly_score, 110, 0.001);
-  assertApprox('computeSeasonTrends_: Alpha std dev', trends[0].std_dev, 8.164966, 0.001);
-  assert('computeSeasonTrends_: Alpha trend rising', trends[0].scoring_trend, 'rising');
-  assert('computeSeasonTrends_: Alpha expected wins (weeks > median 95)', trends[0].expected_wins, 3);
-  assert('computeSeasonTrends_: Alpha luck = wins - expected', trends[0].luck_factor, -1);
-  assertApprox('computeSeasonTrends_: Bravo avg score', trends[1].avg_weekly_score, 80, 0.001);
-  assert('computeSeasonTrends_: Bravo trend falling', trends[1].scoring_trend, 'falling');
-  assert('computeSeasonTrends_: Bravo expected wins', trends[1].expected_wins, 0);
-  assert('computeSeasonTrends_: Bravo luck = wins - expected', trends[1].luck_factor, 1);
 
   Logger.log('─────────────────────────────────');
   Logger.log('Tests complete: ' + passed + ' passed, ' + failed + ' failed.');

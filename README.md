@@ -6,7 +6,7 @@
 
 Automated Yahoo Fantasy Football weekly snapshot generator built on Google Apps Script.
 
-Pulls your league standings, top performers, waiver pickups, power rankings, and more — then emails you a comprehensive weekly HTML report. Optionally persists data to Supabase for season-long trend tracking.
+Pulls your league standings, top performers, waiver pickups, power rankings, and more — then emails you a comprehensive weekly HTML report.
 
 ## Features
 
@@ -18,14 +18,12 @@ Pulls your league standings, top performers, waiver pickups, power rankings, and
 - **Top Waiver Pickups** — best recent adds that were actually started
 - **Position Leaders** (QB, RB, WR, TE, K, DEF) with ownership info
 - **Matchup Projections** — projected scores, spread, and confidence % for upcoming week
-- **Season-Long Trends** — scoring trend, consistency rating, and luck factor (optional, requires Supabase with 3+ weeks of data)
 - **Multi-league support** — tracks all your Yahoo leagues automatically
 
 ## Tech Stack
 
 - **Runtime:** Google Apps Script (V8)
 - **API:** Yahoo Fantasy Sports API v2 (OAuth2)
-- **Data Persistence:** Supabase (optional — enables season-long trends and historical data)
 - **Delivery:** Email via `MailApp`
 
 ## Quick Start
@@ -35,7 +33,6 @@ Pulls your league standings, top performers, waiver pickups, power rankings, and
 - A Google account with access to [Google Apps Script](https://script.google.com)
 - A Yahoo Fantasy Sports account with at least one NFL league
 - A Yahoo Developer app (free) for OAuth credentials
-- (Optional) A Supabase project for season-long data persistence
 
 ### 1. Create the Apps Script Project
 
@@ -54,8 +51,6 @@ In the Apps Script IDE: **Project Settings → Script Properties**, add:
 | `YAHOO_REDIRECT_URI` | Yes | Apps Script Web App URL (set after deploying) |
 | `YAHOO_LEAGUE_KEY` | Yes | Default league key (e.g. `423.l.12345`) |
 | `RECIPIENT_EMAIL` | Yes | Email address to send snapshots to |
-| `SUPABASE_URL` | No | Supabase project URL (enables season trends) |
-| `SUPABASE_ANON_KEY` | No | Supabase anon key (enables season trends) |
 
 The following are written automatically by the auth flow:
 - `YAHOO_ACCESS_TOKEN`, `YAHOO_REFRESH_TOKEN`, `YAHOO_EXPIRES_IN`, `YAHOO_TOKEN_CREATED_AT`
@@ -92,7 +87,6 @@ Use `debugSnapshotToLog()` to preview the snapshot output without sending an ema
 The weekly email is delivered as a styled HTML email with a plain text fallback. It includes:
 
 - **League Standings** — color-coded table with rank, record, PF/PA, and playoff clinch star
-- **Season Trends** — scoring trend (rising/stable/falling), consistency (std deviation), luck factor — shown when Supabase has 3+ weeks of data
 - **Power Rankings** — 3-week rolling average with green/red trend arrows and rank change delta
 - **Top 3 Highest Scoring Teams** — ranked by weekly points
 - **Biggest Blowouts** — top 3 matchups by winning margin
@@ -101,42 +95,6 @@ The weekly email is delivered as a styled HTML email with a plain text fallback.
 - **Top Waiver Pickups** — best recently added players that were actually started
 - **Position Leaders** — top 3 per position (QB, RB, WR, TE, K, DEF) with ownership
 - **Matchup Projections** — projected scores, spread, and color-coded confidence % for the upcoming week
-
-## Supabase Setup (Optional)
-
-To enable season-long trends, create a Supabase project and run:
-
-```sql
-CREATE TABLE weekly_snapshots (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  league_id TEXT NOT NULL,
-  team_id TEXT NOT NULL,
-  team_name TEXT NOT NULL,
-  manager_name TEXT,
-  week INT NOT NULL,
-  rank INT,
-  wins INT,
-  losses INT,
-  ties INT,
-  points_for NUMERIC,
-  points_against NUMERIC,
-  weekly_score NUMERIC,
-  snapshot_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(league_id, team_id, week)
-);
-
-CREATE INDEX idx_weekly_snapshots_league_week ON weekly_snapshots(league_id, week);
-
-ALTER TABLE weekly_snapshots ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Allow anon insert" ON weekly_snapshots
-  FOR INSERT TO anon WITH CHECK (true);
-
-CREATE POLICY "Allow anon select" ON weekly_snapshots
-  FOR SELECT TO anon USING (true);
-```
-
-Then set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Script Properties. Season trends appear automatically after 3+ weeks of data.
 
 ## Deployment Checklist
 
@@ -147,7 +105,6 @@ Then set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in Script Properties. Season tre
 - [ ] Run `startYahooAuth()` and complete OAuth flow in browser
 - [ ] Test `pullFantasyData()` manually
 - [ ] Set up weekly time-driven trigger (Monday 9 AM recommended)
-- [ ] (Optional) Set up Supabase and add credentials for season trends
 
 ## Development Workflow
 
