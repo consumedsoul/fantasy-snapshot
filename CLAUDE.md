@@ -20,7 +20,7 @@ Single file: `Code.gs` (~2,200 lines)
 - `doGet(e)` — OAuth callback handler (Web App endpoint)
 - `debugAllLeaguesRaw()` — Debug helper: logs raw Yahoo API response
 - `debugSnapshotToLog()` — Debug helper: generates snapshot and logs to console (no email)
-- `checkSetup()` — Setup diagnostic: logs which Script Properties are SET/MISSING (never logs values), plus installed `pullFantasyData` trigger count, and a READY / NOT READY verdict
+- `checkSetup()` — Setup diagnostic: logs which Script Properties are SET/MISSING (never logs values), makes a **live Yahoo API call** to prove the token can actually read Fantasy data, reports installed `pullFantasyData` trigger count, and gives a READY / NOT READY verdict. Never reports READY on property presence alone
 
 ### Private Helpers (suffix: `_`)
 
@@ -108,6 +108,13 @@ displays this. Nothing in this project can work around it — access must be gra
 Verified scope behaviour on an unapproved app (probing the authorization endpoint directly):
 `fspt-r` rejected, `fspt-w` rejected, `profile` rejected, `openid` accepted, no-scope accepted.
 An accepted authorization does not imply the resulting token can read Fantasy data.
+
+**Confirmed empirically (2026-08-13):** authorizing with `YAHOO_SCOPE=none` completes the OAuth
+handshake and stores valid access/refresh tokens, but every Fantasy API call then fails with
+`HTTP 401 oauth_problem="additional_authorization_required"`. There is no client-side workaround —
+the Yahoo app itself must be granted Fantasy Sports access. Token *refresh* is unaffected by scope
+(`refreshYahooAccessToken_` sends only `grant_type`/`refresh_token`), so `YAHOO_SCOPE` matters only
+for the initial authorization URL.
 
 ## Yahoo API conventions
 

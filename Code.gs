@@ -78,13 +78,44 @@ function checkSetup() {
     Logger.log(name + ': ' + report[name]);
   });
 
+  // Live API probe. Property presence proves nothing: a Yahoo app without Fantasy
+  // Sports API permission completes OAuth and stores valid-looking tokens, then fails
+  // every data call with 401 oauth_problem="additional_authorization_required".
+  // Only an actual request can tell the difference, so don't claim READY without one.
+  var probeOk = false;
+  var probeError = null;
+  if (!missingRequired.length && !missingAuth.length) {
+    Logger.log('-- Live API probe --');
+    try {
+      var probeLeagues = getAllLeagues_();
+      probeOk = true;
+      report.API_PROBE = 'OK';
+      Logger.log('Yahoo API reachable — returned ' + (probeLeagues ? probeLeagues.length : 0) + ' league(s).');
+      if (!probeLeagues || !probeLeagues.length) {
+        Logger.log('Note: zero leagues is normal in the off-season before drafts occur.');
+      }
+    } catch (probeErr) {
+      report.API_PROBE = 'FAILED';
+      probeError = probeErr.message || String(probeErr);
+      Logger.log('Yahoo API call FAILED: ' + probeError);
+    }
+  }
+
   Logger.log('-- Verdict --');
   if (missingRequired.length) {
     Logger.log('NOT READY. Set these Script Properties first: ' + missingRequired.join(', '));
   } else if (missingAuth.length) {
     Logger.log('Properties OK. Next step: run startYahooAuth() and complete the Yahoo OAuth flow in a browser.');
-  } else {
+  } else if (probeOk) {
     Logger.log('READY. You can run pullFantasyData().');
+  } else if (probeError && probeError.indexOf('additional_authorization_required') !== -1) {
+    Logger.log('NOT READY. Tokens are valid, but Yahoo refuses Fantasy data for this app.');
+    Logger.log('Cause: the Yahoo app has no Fantasy Sports API permission. Authenticating with');
+    Logger.log('YAHOO_SCOPE=none succeeds but yields a token that cannot read Fantasy data.');
+    Logger.log('Fix: request access at https://sports.yahoo.com/developer/access/ for this Client ID,');
+    Logger.log('then remove YAHOO_SCOPE (so it defaults to fspt-r) and re-run startYahooAuth().');
+  } else {
+    Logger.log('NOT READY. Tokens are present but the Yahoo API call failed — see the error above.');
   }
 
   var triggers = ScriptApp.getProjectTriggers().filter(function (t) {
