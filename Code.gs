@@ -1897,6 +1897,19 @@ function doGet(e) {
   e = e || { parameter: {} };
   var params = e.parameter || {};
 
+  // Diagnostic: log which params actually arrived (never the code value itself).
+  // Visible in the IDE under Executions — the only way to see what Yahoo sent back.
+  var paramNames = Object.keys(params);
+  Logger.log('[doGet] Callback received. Params: ' + (paramNames.length ? paramNames.join(', ') : '(none)') +
+    ' | code length: ' + (params.code ? params.code.length : 0) +
+    ' | state present: ' + (params.state ? 'yes' : 'no'));
+  if (params.error) {
+    Logger.log('[doGet] Yahoo returned an error: ' + params.error +
+      (params.error_description ? ' — ' + params.error_description : ''));
+    return HtmlService.createHtmlOutput('Yahoo authorization failed: ' + escapeHtml_(params.error) +
+      (params.error_description ? ' — ' + escapeHtml_(params.error_description) : ''));
+  }
+
   if (params.code && params.code.length > 10) {
     // Validate the CSRF state nonce set by getYahooAuthUrl_().
     var stateCache = CacheService.getScriptCache();
@@ -1954,7 +1967,8 @@ function doGet(e) {
     return HtmlService.createHtmlOutput('Yahoo authorization successful. You can close this tab.');
   }
 
-  return HtmlService.createHtmlOutput('Yahoo Fantasy Snapshot Web App');
+  return HtmlService.createHtmlOutput('Yahoo Fantasy Snapshot Web App — no authorization code received. ' +
+    'If you reached this page from Yahoo, the callback arrived without a code; check Executions for the [doGet] log line.');
 }
 
 function getYahooAccessToken_() {
