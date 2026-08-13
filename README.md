@@ -49,7 +49,7 @@ In the Apps Script IDE: **Project Settings → Script Properties**, add:
 | `YAHOO_CLIENT_ID` | Yes | Yahoo OAuth app client ID |
 | `YAHOO_CLIENT_SECRET` | Yes | Yahoo OAuth app client secret |
 | `YAHOO_REDIRECT_URI` | Yes | Apps Script Web App URL (set after deploying) |
-| `YAHOO_LEAGUE_KEY` | Yes | Default league key (e.g. `423.l.12345`) |
+| `YAHOO_LEAGUE_KEY` | No | Fallback league key (e.g. `423.l.12345`). `pullFantasyData()` auto-discovers every league via `getAllLeagues_()` and passes the key explicitly, so this is only used by helpers called directly with no key. |
 | `RECIPIENT_EMAIL` | Yes | Email address to send snapshots to |
 
 The following are written automatically by the auth flow:
