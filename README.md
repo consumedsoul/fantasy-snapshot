@@ -79,10 +79,13 @@ Use `debugSnapshotToLog()` to preview the snapshot output without sending an ema
 
 ### 6. Set Up a Trigger
 
-1. **Triggers → Add Trigger**
-2. Function: `pullFantasyData`
-3. Event source: **Time-driven**
-4. Type: **Week timer** → Monday, 9 AM (or whenever you want it)
+Run `installWeeklyTrigger()` in the IDE. It schedules `pullFantasyData` for Tuesday
+~8:00 AM in the script's timezone (America/Los_Angeles) — after Monday Night Football,
+so the completed week is final.
+
+It is safe to re-run: existing `pullFantasyData` triggers are removed first, so you
+never end up with duplicates sending duplicate emails. `removeWeeklyTrigger()` undoes it.
+Adjust `WEEKLY_TRIGGER_DAY` / `WEEKLY_TRIGGER_HOUR` at the top of `Code.gs` to change the schedule.
 
 ## Email Output
 
@@ -106,7 +109,7 @@ The weekly email is delivered as a styled HTML email with a plain text fallback.
 - [ ] Copy Web App URL to `YAHOO_REDIRECT_URI`
 - [ ] Run `startYahooAuth()` and complete OAuth flow in browser
 - [ ] Test `pullFantasyData()` manually
-- [ ] Set up weekly time-driven trigger (Monday 9 AM recommended)
+- [ ] Run `installWeeklyTrigger()` (Tuesday ~8 AM Pacific)
 
 ## Development Workflow
 

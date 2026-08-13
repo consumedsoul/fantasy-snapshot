@@ -20,6 +20,8 @@ Single file: `Code.gs` (~2,200 lines)
 - `doGet(e)` — OAuth callback handler (Web App endpoint)
 - `debugAllLeaguesRaw()` — Debug helper: logs raw Yahoo API response
 - `debugSnapshotToLog()` — Debug helper: generates snapshot and logs to console (no email)
+- `installWeeklyTrigger()` — Installs the weekly `pullFantasyData` trigger (Tuesday ~8:00, script timezone). Idempotent: removes existing `pullFantasyData` triggers first, so it never stacks duplicates
+- `removeWeeklyTrigger()` — Removes all `pullFantasyData` time-driven triggers
 - `checkSetup()` — Setup diagnostic: logs which Script Properties are SET/MISSING (never logs values), makes a **live Yahoo API call** to prove the token can actually read Fantasy data, reports installed `pullFantasyData` trigger count, and gives a READY / NOT READY verdict. Never reports READY on property presence alone
 
 ### Private Helpers (suffix: `_`)
@@ -140,7 +142,7 @@ for the initial authorization URL.
 - [ ] Copy Web App URL to `YAHOO_REDIRECT_URI` property
 - [ ] Run `startYahooAuth()` in IDE and complete OAuth flow in browser
 - [ ] Test `pullFantasyData()` manually
-- [ ] Set up time-driven trigger (recommended: weekly, Monday 9 AM)
+- [ ] Run `installWeeklyTrigger()` (Tuesday ~8 AM Pacific — after Monday Night Football)
 - [ ] Verify first automated run succeeds
 
 ### Manual Steps
@@ -148,7 +150,7 @@ for the initial authorization URL.
 2. Set all Script Properties listed above.
 3. Deploy as a **Web App** (execute as: you, access: anyone) to get the `YAHOO_REDIRECT_URI`.
 4. Run `startYahooAuth()` once in the IDE — copy the logged URL into a browser to complete the OAuth handshake.
-5. Run `pullFantasyData()` (or set up a time-driven trigger) to send the snapshot email.
+5. Run `pullFantasyData()` to send the snapshot email, then `installWeeklyTrigger()` to schedule it.
 
 ## Deployment workflow
 
@@ -169,6 +171,8 @@ for the initial authorization URL.
 - Token expiration is checked proactively (5-minute buffer) to avoid wasted API calls.
 - All Yahoo API calls have retry logic with exponential backoff (3 attempts: 2s, 4s, 8s).
 - API call count is tracked globally in `API_CALL_COUNT` and logged with snapshot results.
+- Script timezone is **America/Los_Angeles** (`appsscript.json`). It drives both the trigger hour and `Session.getScriptTimeZone()` used for waiver "added day" labels — changing it shifts both.
+- Time-driven triggers fire within roughly an hour of the requested time, not exactly on the hour.
 
 ## Global Constants
 
@@ -183,6 +187,8 @@ Defined at the top of `Code.gs` (lines 1-11):
 | `MIN_WEEK` / `MAX_WEEK` | 1 / 18 | NFL week range for validation |
 | `POWER_RANKING_WINDOW` | 3 | Rolling weeks for power rankings |
 | `SLOW_RUN_THRESHOLD_SEC` | 240 | Alert if execution exceeds 4 minutes |
+| `WEEKLY_TRIGGER_DAY` | `'TUESDAY'` | Day `installWeeklyTrigger()` schedules the run |
+| `WEEKLY_TRIGGER_HOUR` | 8 | Hour for that trigger, in the script's timezone |
 
 ## Recent Improvements
 

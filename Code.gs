@@ -9,6 +9,8 @@ var TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // Refresh token 5 min before expir
 var RATE_LIMIT_DELAY_MS = 200;        // Delay between API batches
 var POWER_RANKING_WINDOW = 3;         // Rolling weeks for power rankings
 var SLOW_RUN_THRESHOLD_SEC = 240;     // Alert if execution exceeds 4 minutes
+var WEEKLY_TRIGGER_DAY = 'TUESDAY';   // Day pullFantasyData runs (ScriptApp.WeekDay key)
+var WEEKLY_TRIGGER_HOUR = 8;          // Hour in the script's timezone (appsscript.json timeZone)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function getConfig_() {
@@ -26,6 +28,56 @@ function getRecipientEmail_() {
     throw new Error('[getRecipientEmail_] Missing RECIPIENT_EMAIL script property.');
   }
   return email;
+}
+
+/**
+ * Installs the weekly time-driven trigger for pullFantasyData.
+ *
+ * Idempotent — removes any existing pullFantasyData triggers first, so running it
+ * twice leaves exactly one trigger rather than stacking duplicates that would send
+ * duplicate emails.
+ *
+ * Runs Tuesday morning: Monday Night Football finishes late Monday, so Tuesday is
+ * the first point the completed week's scores are final. Apps Script fires time-based
+ * triggers within roughly an hour of the requested time, and interprets the hour in
+ * the script's timezone (`timeZone` in appsscript.json — America/Los_Angeles).
+ *
+ * @public
+ * @returns {number} Number of pre-existing triggers that were replaced
+ */
+function installWeeklyTrigger() {
+  var removed = removeWeeklyTrigger();
+
+  ScriptApp.newTrigger('pullFantasyData')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay[WEEKLY_TRIGGER_DAY])
+    .atHour(WEEKLY_TRIGGER_HOUR)
+    .create();
+
+  Logger.log('[installWeeklyTrigger] Installed: pullFantasyData, ' + WEEKLY_TRIGGER_DAY +
+    ' ~' + WEEKLY_TRIGGER_HOUR + ':00 (' + Session.getScriptTimeZone() + ')' +
+    (removed ? ' — replaced ' + removed + ' existing trigger(s)' : ''));
+  Logger.log('[installWeeklyTrigger] Apps Script fires this within about an hour of ' +
+    WEEKLY_TRIGGER_HOUR + ':00, not exactly on the hour.');
+  return removed;
+}
+
+/**
+ * Removes every time-driven trigger for pullFantasyData.
+ *
+ * @public
+ * @returns {number} Number of triggers removed
+ */
+function removeWeeklyTrigger() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'pullFantasyData') {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  Logger.log('[removeWeeklyTrigger] Removed ' + removed + ' pullFantasyData trigger(s).');
+  return removed;
 }
 
 /**
@@ -122,6 +174,13 @@ function checkSetup() {
     return t.getHandlerFunction() === 'pullFantasyData';
   });
   Logger.log('pullFantasyData triggers installed: ' + triggers.length);
+  if (!triggers.length) {
+    Logger.log('No weekly trigger yet. Run installWeeklyTrigger() to schedule it for ' +
+      WEEKLY_TRIGGER_DAY + ' ~' + WEEKLY_TRIGGER_HOUR + ':00 (' + Session.getScriptTimeZone() + ').');
+  } else if (triggers.length > 1) {
+    Logger.log('WARNING: ' + triggers.length + ' triggers would send duplicate emails. ' +
+      'Run installWeeklyTrigger() to collapse them to one.');
+  }
 
   return report;
 }
