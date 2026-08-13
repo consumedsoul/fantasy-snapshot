@@ -85,13 +85,29 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 | `YAHOO_CLIENT_ID` | Yahoo OAuth app client ID |
 | `YAHOO_CLIENT_SECRET` | Yahoo OAuth app client secret |
 | `YAHOO_REDIRECT_URI` | Apps Script Web App URL (OAuth callback) |
-| `YAHOO_LEAGUE_KEY` | Default league key (used when none is passed explicitly) |
+| `YAHOO_LEAGUE_KEY` | Fallback league key (*optional* — `pullFantasyData` auto-discovers leagues and passes the key explicitly) |
+| `YAHOO_SCOPE` | OAuth scope override (*optional*, default `fspt-r`). Set to `none` to omit the scope param entirely. See Yahoo API access below |
 | `YAHOO_ACCESS_TOKEN` | Current OAuth access token (written by auth flow) |
 | `YAHOO_REFRESH_TOKEN` | OAuth refresh token (written by auth flow) |
 | `YAHOO_EXPIRES_IN` | Token TTL in seconds |
 | `YAHOO_TOKEN_CREATED_AT` | Epoch ms when the token was issued |
 | `RECIPIENT_EMAIL` | Email address to send snapshots to (required) |
 | `OFFSEASON_NOTICE_SENT` | Internal flag (written by `pullFantasyData`): `'true'` once the one-time off-season pause notice has been sent; cleared automatically when a season becomes active |
+
+## Yahoo Fantasy API access (approval required)
+
+As of 2026 Yahoo gates Fantasy Sports API access behind an approval application at
+<https://sports.yahoo.com/developer/access/>. Newly created Yahoo apps have **no** Fantasy
+Sports permission — the option is absent from the app-creation form — and Yahoo rejects
+`scope=fspt-r` with `invalid_scope` on the authorization redirect, before any login page.
+
+Symptom: `startYahooAuth()` produces a URL that bounces straight back to the Web App with
+`?error=invalid_scope&error_description=invalid+scope` and no `code`. `doGet` logs and
+displays this. Nothing in this project can work around it — access must be granted by Yahoo.
+
+Verified scope behaviour on an unapproved app (probing the authorization endpoint directly):
+`fspt-r` rejected, `fspt-w` rejected, `profile` rejected, `openid` accepted, no-scope accepted.
+An accepted authorization does not imply the resulting token can read Fantasy data.
 
 ## Yahoo API conventions
 

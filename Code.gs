@@ -47,7 +47,7 @@ function checkSetup() {
     'RECIPIENT_EMAIL'
   ];
   var authWritten = ['YAHOO_ACCESS_TOKEN', 'YAHOO_REFRESH_TOKEN', 'YAHOO_TOKEN_CREATED_AT'];
-  var optional = ['YAHOO_LEAGUE_KEY'];
+  var optional = ['YAHOO_LEAGUE_KEY', 'YAHOO_SCOPE'];
 
   var report = {};
   var missingRequired = [];
@@ -1852,14 +1852,23 @@ function getYahooAuthUrl_() {
   var state = Utilities.getUuid();
   CacheService.getScriptCache().put('oauth_state', state, 600); // 10-minute TTL
 
+  // Yahoo gates Fantasy Sports access behind an approval application
+  // (https://sports.yahoo.com/developer/access/). Until an app is approved, Yahoo
+  // rejects scope=fspt-r with invalid_scope before the user ever sees a login page.
+  // Override via the optional YAHOO_SCOPE property; set it to 'none' to omit the
+  // parameter entirely (useful only for probing what an unapproved app can reach).
+  var scope = PropertiesService.getScriptProperties().getProperty('YAHOO_SCOPE') || 'fspt-r';
+
   var params = {
     client_id: cfg.yahooClientId,
     redirect_uri: redirectUri,
     response_type: 'code',
     language: 'en-us',
-    scope: 'fspt-r',
     state: state
   };
+  if (scope !== 'none') {
+    params.scope = scope;
+  }
 
   var query = Object.keys(params)
     .map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); })
