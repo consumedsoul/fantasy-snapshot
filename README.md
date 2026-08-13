@@ -2,7 +2,8 @@
 
 > **Status: active (revived 2026-08-12), pending Yahoo API access.** The Apps Script deployment has
 > been rebuilt and the code redeployed. As of 2026 Yahoo gates Fantasy Sports API access behind an
-> approval application — a request was submitted 2026-08-13 and is awaiting review. Until it is
+> approval application — a request was submitted 2026-08-13 and acknowledged the same day
+> (stated review time 1-2 weeks). Until it is
 > granted, Fantasy API calls return `401 additional_authorization_required`.
 > Run `checkSetup()` in the Apps Script IDE to check current status.
 

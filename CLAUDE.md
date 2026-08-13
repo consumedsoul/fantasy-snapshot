@@ -98,7 +98,8 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 
 ## Yahoo Fantasy API access (approval required)
 
-> **Status: application submitted 2026-08-13, awaiting Yahoo review.** Until it is approved,
+> **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day; stated review
+> time 1-2 weeks, so expect a decision ~2026-08-20 to 2026-08-27.** Until it is approved,
 > `pullFantasyData()` cannot work — every Fantasy API call returns 401. This is the only
 > outstanding blocker; the code, deployment, and Script Properties are all complete.
 >
