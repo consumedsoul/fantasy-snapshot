@@ -1,8 +1,10 @@
 # fantasy-snapshot
 
-> **Status: active (revived 2026-08-12).** Previously archived; the Apps Script deployment has been
-> rebuilt and the code redeployed. See [`docs/audits/`](docs/audits/) for the review history.
-> Run `checkSetup()` in the Apps Script IDE to verify configuration before the first run.
+> **Status: active (revived 2026-08-12), pending Yahoo API access.** The Apps Script deployment has
+> been rebuilt and the code redeployed. As of 2026 Yahoo gates Fantasy Sports API access behind an
+> approval application — a request was submitted 2026-08-13 and is awaiting review. Until it is
+> granted, Fantasy API calls return `401 additional_authorization_required`.
+> Run `checkSetup()` in the Apps Script IDE to check current status.
 
 Automated Yahoo Fantasy Football weekly snapshot generator built on Google Apps Script.
 

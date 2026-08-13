@@ -96,6 +96,15 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 
 ## Yahoo Fantasy API access (approval required)
 
+> **Status: application submitted 2026-08-13, awaiting Yahoo review.** Until it is approved,
+> `pullFantasyData()` cannot work — every Fantasy API call returns 401. This is the only
+> outstanding blocker; the code, deployment, and Script Properties are all complete.
+>
+> **When approval arrives:** run `checkSetup()` first — if Yahoo provisioned access onto the
+> existing Client ID, the stored token may already work and the probe will say READY. If the
+> probe still fails, delete `YAHOO_SCOPE` (so it defaults back to `fspt-r`), re-run
+> `startYahooAuth()`, complete the flow, then `checkSetup()` again.
+
 As of 2026 Yahoo gates Fantasy Sports API access behind an approval application at
 <https://sports.yahoo.com/developer/access/>. Newly created Yahoo apps have **no** Fantasy
 Sports permission — the option is absent from the app-creation form — and Yahoo rejects
