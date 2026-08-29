@@ -3,7 +3,7 @@
 > **Status: active (revived 2026-08-12), pending Yahoo API access.** The Apps Script deployment has
 > been rebuilt and the code redeployed. As of 2026 Yahoo gates Fantasy Sports API access behind an
 > approval application — a request was submitted 2026-08-13 and acknowledged the same day
-> (stated review time 1-2 weeks). Until it is
+> but remains pending as of 2026-08-28, after the stated 1-2 week review window. Until it is
 > granted, Fantasy API calls return `401 additional_authorization_required`.
 > Run `checkSetup()` in the Apps Script IDE to check current status.
 
@@ -118,7 +118,7 @@ After any code changes:
 1. Commit and push to git
 2. `clasp push` to deploy to Google Apps Script
 
-Both destinations must stay in sync. See [CLAUDE.md](CLAUDE.md) for full technical documentation.
+Both destinations must stay in sync. See [AGENTS.md](AGENTS.md) for full technical documentation.
 
 To use `clasp` locally:
 1. `npm install -g @google/clasp`
@@ -135,22 +135,20 @@ You can also run `debugAllLeaguesRaw()` in the IDE to see all league keys for yo
 
 ## Documentation
 
-- **[CLAUDE.md](CLAUDE.md)** — Comprehensive technical documentation for developers and AI agents
+- **[AGENTS.md](AGENTS.md)** — Comprehensive technical documentation for developers and AI agents
 - **[Audit History](docs/audits/)** — Weekly code audits and improvement tracking
 
 ## Project Status
 
 **Current Version:** v1.7
-**Code Health:** Excellent (95/100)
-**Active Development:** Yes
-**Last Updated:** 2026-05-18
+**Code Health:** Excellent (100/100)
+**Active Development:** Stalled pending Yahoo Fantasy API approval
+**Last Updated:** 2026-08-28
 
-### Recent Audit Findings (2026-05-18)
-- 🔴 0 Critical issues
-- 🟠 1 High priority item — position leaders re-fetched all player stats 6× per run (**fixed**: ~48 → ~8 Yahoo API calls/league)
-- 🟡 4 Medium priority items (NaN-week guard + 429/5xx retry **fixed**; god-function split + trends-testability deferred)
-- ⚪ 3 Low priority items (plain-text entity decode **fixed**; OAuth `state` + `LockService` deferred)
-- See [latest audit](docs/audits/2026-05-18-audit.md) for details
+### Current Status (2026-08-28)
+- Yahoo Fantasy API approval is still pending; API calls remain blocked with `401 additional_authorization_required`
+- The audit found no critical or high-priority issues
+- Repository guidance now uses `AGENTS.md` and includes the required Sync Policy
 
 ## Contributing
 

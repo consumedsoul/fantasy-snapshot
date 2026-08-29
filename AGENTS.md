@@ -10,7 +10,7 @@ Google Apps Script that pulls Yahoo Fantasy Football league data, builds a weekl
 
 ## Project layout
 
-Single file: `Code.gs` (~2,200 lines)
+Single file: `Code.gs` (~2,300 lines)
 
 ## Function Index
 
@@ -98,8 +98,8 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 
 ## Yahoo Fantasy API access (approval required)
 
-> **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day; stated review
-> time 1-2 weeks, so expect a decision ~2026-08-20 to 2026-08-27.** Until it is approved,
+> **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day, and still
+> pending as of 2026-08-28 after the stated 1-2 week review window.** Until it is approved,
 > `pullFantasyData()` cannot work — every Fantasy API call returns 401. This is the only
 > outstanding blocker; the code, deployment, and Script Properties are all complete.
 >
@@ -153,13 +153,31 @@ for the initial authorization URL.
 4. Run `startYahooAuth()` once in the IDE — copy the logged URL into a browser to complete the OAuth handshake.
 5. Run `pullFantasyData()` to send the snapshot email, then `installWeeklyTrigger()` to schedule it.
 
-## Deployment workflow
+## Sync Policy
 
-**After any code changes, always commit/push to git AND push to Google Apps Script via `clasp push`.** Both destinations must stay in sync. Never consider a code change complete until it has been committed to git and deployed to GAS.
+Always finish a working session by committing and pushing, without being
+asked:
+
+    git add -A && git commit -m "..." && git push origin main
+
+**This is an Apps Script project — git push alone does NOT deploy.** After any
+change to `Code.gs` or `appsscript.json`, you must also run:
+
+    clasp push
+
+Both destinations must stay in sync — git is the source-controlled history,
+`clasp push` is what actually updates the live Apps Script project (script ID
+in `.clasp.json`). A change committed to git but not pushed via `clasp` has
+not shipped; a change pushed via `clasp` but not committed to git will be lost
+on the next `clasp pull` or teardown. Neither Script Properties, the Web App
+deployment, nor the Yahoo OAuth token/trigger state live in code — those are
+IDE-side state that does not travel with either `git push` or `clasp push`
+(see "Recent Improvements — 2026-08-12 (revival)" for what had to be
+re-established by hand after the project's Apps Script side went blank).
 
 ### Rollback
-- **Via Apps Script**: Editor → Project History → select a prior version → Restore
-- **Via git**: `git checkout <commit> Code.gs && clasp push`
+- **Via Apps Script:** Editor → Project History → select a prior version → Restore
+- **Via git:** `git checkout <commit> Code.gs && clasp push`
 
 ## Conventions & gotchas
 
