@@ -118,7 +118,7 @@ After any code changes:
 1. Commit and push to git
 2. `clasp push` to deploy to Google Apps Script
 
-Both destinations must stay in sync. See [AGENTS.md](AGENTS.md) for full technical documentation.
+Both destinations must stay in sync. See [CLAUDE.md](CLAUDE.md) for full technical documentation.
 
 To use `clasp` locally:
 1. `npm install -g @google/clasp`
@@ -135,7 +135,7 @@ You can also run `debugAllLeaguesRaw()` in the IDE to see all league keys for yo
 
 ## Documentation
 
-- **[AGENTS.md](AGENTS.md)** — Comprehensive technical documentation for developers and AI agents
+- **[CLAUDE.md](CLAUDE.md)** — Comprehensive technical documentation for developers and AI agents
 - **[Audit History](docs/audits/)** — Weekly code audits and improvement tracking
 
 ## Project Status
@@ -148,7 +148,7 @@ You can also run `debugAllLeaguesRaw()` in the IDE to see all league keys for yo
 ### Current Status (2026-08-28)
 - Yahoo Fantasy API approval is still pending; API calls remain blocked with `401 additional_authorization_required`
 - The audit found no critical or high-priority issues
-- Repository guidance now uses `AGENTS.md` and includes the required Sync Policy
+- Repository guidance now uses `CLAUDE.md` and includes the required Sync Policy
 
 ## Contributing
 
