@@ -1672,6 +1672,29 @@ function validateWeek_(week, functionName) {
   }
 }
 
+/**
+ * Decides what pullFantasyData should do about the weekly email, given season state.
+ *
+ * Pure: no I/O, no property reads, no email. The caller supplies the three inputs and
+ * performs the resulting action. Extracted so the off-season pause is unit-testable —
+ * its failure mode is silence, which is indistinguishable from correct off-season
+ * behaviour in production.
+ *
+ * @param {boolean} anySeasonActive - true if at least one league has started its season
+ * @param {number} failedLeaguesCount - how many leagues threw while building a snapshot
+ * @param {boolean} alreadyNotified - value of the OFFSEASON_NOTICE_SENT flag
+ * @return {string} 'SEND_SNAPSHOT' (normal weekly email), 'SEND_NOTICE' (one-time
+ *   off-season notice, then latch the flag), or 'STAY_SILENT' (paused for the off-season)
+ */
+function offseasonEmailDecision_(anySeasonActive, failedLeaguesCount, alreadyNotified) {
+  // A league error still warrants the normal email so the failure stays visible,
+  // even when no season is active.
+  if (anySeasonActive || failedLeaguesCount > 0) {
+    return 'SEND_SNAPSHOT';
+  }
+  return alreadyNotified ? 'STAY_SILENT' : 'SEND_NOTICE';
+}
+
 function retryWithBackoff_(fn, maxRetries) {
   maxRetries = maxRetries || 3;
   var retries = 0;
@@ -1798,15 +1821,16 @@ function pullFantasyData() {
 
     // Off-season auto-pause: when no league has an active season (every league is
     // between seasons, currentWeek null/NaN/<2), don't email a near-empty snapshot
-    // every Monday for ~6 months. Send a single "see you next season" notice the
-    // first time, then stay silent until Week 1 returns. Skip suppression if any
-    // league errored — errors still warrant the normal email so they're visible.
+    // every Monday for ~6 months. The decision itself lives in the pure
+    // offseasonEmailDecision_ so it can be unit-tested; this block just executes it.
     var props = PropertiesService.getScriptProperties();
-    if (!anySeasonActive && failedLeagues.length === 0) {
+    var alreadyNotified = props.getProperty('OFFSEASON_NOTICE_SENT') === 'true';
+    var emailDecision = offseasonEmailDecision_(anySeasonActive, failedLeagues.length, alreadyNotified);
+
+    if (emailDecision !== 'SEND_SNAPSHOT') {
       endTime = Date.now();
       durationSec = ((endTime - startTime) / 1000).toFixed(2);
-      var alreadyNotified = props.getProperty('OFFSEASON_NOTICE_SENT') === 'true';
-      if (!alreadyNotified) {
+      if (emailDecision === 'SEND_NOTICE') {
         sendNotificationEmail_('Yahoo Fantasy Snapshot - Off-Season',
           'All leagues are between seasons (no active week yet).\n\n' +
           'Weekly snapshots will pause until Week 1 of the next season. See you then!');
@@ -2048,7 +2072,17 @@ function doGet(e) {
     var body = response.getContentText();
 
     if (status < 200 || status >= 300) {
-      Logger.log('Yahoo token exchange failed: ' + status + ' ' + body);
+      // Never log the token endpoint's response body verbatim — it is the one endpoint
+      // whose payloads carry access and refresh tokens. Log only the error fields.
+      var detail;
+      try {
+        var errJson = JSON.parse(body);
+        detail = (errJson.error || 'unknown_error') +
+          (errJson.error_description ? ': ' + errJson.error_description : '');
+      } catch (parseErr) {
+        detail = String(body).slice(0, 200);
+      }
+      Logger.log('Yahoo token exchange failed: ' + status + ' ' + detail);
       return HtmlService.createHtmlOutput('Yahoo authorization failed. Check the script logs.');
     }
 
@@ -2297,6 +2331,46 @@ function runTests() {
   assert('getPlayerSlot_: returns BN', getPlayerSlot_(benchPlayer), 'BN');
   var qbPlayer = [{ player_key: 'x' }, { selected_position: [{ week: 1, position: 'QB' }] }];
   assert('getPlayerSlot_: returns QB', getPlayerSlot_(qbPlayer), 'QB');
+
+  // offseasonEmailDecision_ — the weekly email's on/off switch. Its failure mode is
+  // silence, so every combination is asserted explicitly.
+  assert('offseasonEmailDecision_: active season sends the snapshot',
+    offseasonEmailDecision_(true, 0, false), 'SEND_SNAPSHOT');
+  assert('offseasonEmailDecision_: active season ignores a stale notice flag',
+    offseasonEmailDecision_(true, 0, true), 'SEND_SNAPSHOT');
+  assert('offseasonEmailDecision_: off-season, not yet notified sends the notice',
+    offseasonEmailDecision_(false, 0, false), 'SEND_NOTICE');
+  assert('offseasonEmailDecision_: off-season, already notified stays silent',
+    offseasonEmailDecision_(false, 0, true), 'STAY_SILENT');
+  assert('offseasonEmailDecision_: a failed league overrides suppression',
+    offseasonEmailDecision_(false, 1, false), 'SEND_SNAPSHOT');
+  assert('offseasonEmailDecision_: a failed league overrides an already-sent notice',
+    offseasonEmailDecision_(false, 2, true), 'SEND_SNAPSHOT');
+
+  // retryWithBackoff_ — maxRetries 1 keeps these fast (a single attempt never sleeps).
+  var retryCalls = 0;
+  var retryResult = retryWithBackoff_(function () { retryCalls++; return 'value'; }, 1);
+  assert('retryWithBackoff_: returns the fn result', retryResult, 'value');
+  assert('retryWithBackoff_: does not retry on success', retryCalls, 1);
+
+  var failCalls = 0;
+  var thrownErr = null;
+  try {
+    retryWithBackoff_(function () { failCalls++; throw new Error('boom'); }, 1);
+  } catch (e) { thrownErr = e; }
+  assert('retryWithBackoff_: attempts exactly maxRetries times', failCalls, 1);
+  assert('retryWithBackoff_: rethrows rather than returning undefined',
+    thrownErr && thrownErr.message, 'boom');
+
+  // One real retry cycle — sleeps ~2s, proves a transient failure recovers.
+  var transientCalls = 0;
+  var recovered = retryWithBackoff_(function () {
+    transientCalls++;
+    if (transientCalls < 2) { throw new Error('transient'); }
+    return 'recovered';
+  }, 2);
+  assert('retryWithBackoff_: recovers on the second attempt', recovered, 'recovered');
+  assert('retryWithBackoff_: retried exactly once', transientCalls, 2);
 
   Logger.log('─────────────────────────────────');
   Logger.log('Tests complete: ' + passed + ' passed, ' + failed + ' failed.');

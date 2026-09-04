@@ -3,7 +3,8 @@
 > **Status: active (revived 2026-08-12), pending Yahoo API access.** The Apps Script deployment has
 > been rebuilt and the code redeployed. As of 2026 Yahoo gates Fantasy Sports API access behind an
 > approval application — a request was submitted 2026-08-13 and acknowledged the same day
-> but remains pending as of 2026-08-28, after the stated 1-2 week review window. Until it is
+> but was still pending at the last check on 2026-08-28, after the stated 1-2 week review
+window closed. Until it is
 > granted, Fantasy API calls return `401 additional_authorization_required`.
 > Run `checkSetup()` in the Apps Script IDE to check current status.
 
@@ -141,14 +142,17 @@ You can also run `debugAllLeaguesRaw()` in the IDE to see all league keys for yo
 ## Project Status
 
 **Current Version:** v1.7
-**Code Health:** Excellent (100/100)
+**Code Health:** See the latest [weekly audit](docs/audits/) for the current score
 **Active Development:** Stalled pending Yahoo Fantasy API approval
-**Last Updated:** 2026-08-28
+**Last Updated:** 2026-09-04
 
-### Current Status (2026-08-28)
-- Yahoo Fantasy API approval is still pending; API calls remain blocked with `401 additional_authorization_required`
-- The audit found no critical or high-priority issues
-- Repository guidance now uses `CLAUDE.md` and includes the required Sync Policy
+### Current Status (2026-09-04)
+- Yahoo Fantasy API approval was still pending at the last check (2026-08-28) and has not been
+  re-verified since; API calls remain blocked with `401 additional_authorization_required`.
+  Run `checkSetup()` in the Apps Script IDE for the current answer
+- The latest audit found no critical or high-priority issues
+- The off-season email gate is now a pure, unit-tested function — it governs whether the weekly
+  email sends at all, and the season boundary is imminent
 
 ## Contributing
 

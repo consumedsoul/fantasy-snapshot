@@ -69,6 +69,7 @@ Single file: `Code.gs` (~2,300 lines)
 - `parseTeamMeta_(teamWrapper, pointsField)` — Extracts team name, manager, and points from Yahoo team wrapper
 - `getPlayerSlot_(playerArr)` — Extracts selected position/slot from Yahoo player array
 - `validateWeek_(week, functionName)` — Validates week is 1-18
+- `offseasonEmailDecision_(anySeasonActive, failedLeaguesCount, alreadyNotified)` — Pure decision for the weekly email: returns `'SEND_SNAPSHOT'`, `'SEND_NOTICE'` or `'STAY_SILENT'`. `pullFantasyData` executes the result; unit-tested in `runTests()`
 - `retryWithBackoff_(fn, maxRetries)` — Exponential backoff retry (3 attempts: 2s, 4s, 8s); throws explicitly if exhausted without a result
 - `escapeHtml_(str)` — Escapes `&`, `<`, `>`, `"` before inserting into HTML email output
 - `runTests()` — Runs unit tests on pure utilities; results logged to execution log
@@ -98,8 +99,10 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 
 ## Yahoo Fantasy API access (approval required)
 
-> **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day, and still
-> pending as of 2026-08-28 after the stated 1-2 week review window.** Until it is approved,
+> **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day, still
+> pending at the last check on 2026-08-28, and not re-verified since.** The stated 1-2 week
+> review window closed ~2026-08-27. Run `checkSetup()` to get the current answer — no code
+> change can confirm it. Until it is approved,
 > `pullFantasyData()` cannot work — every Fantasy API call returns 401. This is the only
 > outstanding blocker; the code, deployment, and Script Properties are all complete.
 >
@@ -136,22 +139,13 @@ for the initial authorization URL.
 
 ## Running & deploying
 
-### Deployment Checklist
-- [ ] Create Apps Script project
-- [ ] Set all required Script Properties (see table above)
-- [ ] Deploy as **Web App** (Execute as: Me, Access: Anyone)
-- [ ] Copy Web App URL to `YAHOO_REDIRECT_URI` property
-- [ ] Run `startYahooAuth()` in IDE and complete OAuth flow in browser
-- [ ] Test `pullFantasyData()` manually
-- [ ] Run `installWeeklyTrigger()` (Tuesday ~8 AM Pacific — after Monday Night Football)
-- [ ] Verify first automated run succeeds
+Setup, deployment and the step-by-step OAuth walkthrough live in
+[README.md](README.md#quick-start) — including the
+[Deployment Checklist](README.md#deployment-checklist). Not duplicated here.
 
-### Manual Steps
-1. Open the project in the [Apps Script IDE](https://script.google.com).
-2. Set all Script Properties listed above.
-3. Deploy as a **Web App** (execute as: you, access: anyone) to get the `YAHOO_REDIRECT_URI`.
-4. Run `startYahooAuth()` once in the IDE — copy the logged URL into a browser to complete the OAuth handshake.
-5. Run `pullFantasyData()` to send the snapshot email, then `installWeeklyTrigger()` to schedule it.
+The one thing worth repeating: none of it travels in code. Script Properties, the Web App
+deployment, the Yahoo OAuth token and the time-driven trigger are all IDE-side state that
+survives neither `git push` nor `clasp push`.
 
 ## Sync Policy
 
@@ -167,7 +161,8 @@ change to `Code.gs` or `appsscript.json`, you must also run:
 
 Both destinations must stay in sync — git is the source-controlled history,
 `clasp push` is what actually updates the live Apps Script project (script ID
-in `.clasp.json`). A change committed to git but not pushed via `clasp` has
+in `.clasp.json` — gitignored, so a fresh clone must first copy
+`.clasp.json.example` and fill in the script ID). A change committed to git but not pushed via `clasp` has
 not shipped; a change pushed via `clasp` but not committed to git will be lost
 on the next `clasp pull` or teardown. Neither Script Properties, the Web App
 deployment, nor the Yahoo OAuth token/trigger state live in code — those are
@@ -195,7 +190,7 @@ re-established by hand after the project's Apps Script side went blank).
 
 ## Global Constants
 
-Defined at the top of `Code.gs` (lines 1-11):
+Defined at the top of `Code.gs` (lines 2-13):
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -211,6 +206,13 @@ Defined at the top of `Code.gs` (lines 1-11):
 
 ## Recent Improvements
 
+**2026-09-04 (audit follow-up):**
+- ✅ Off-season gate extracted as pure `offseasonEmailDecision_(anySeasonActive, failedLeaguesCount, alreadyNotified)` → `'SEND_SNAPSHOT'` / `'SEND_NOTICE'` / `'STAY_SILENT'`; `pullFantasyData` now just executes the decision. Behaviour unchanged — the gate's failure mode is *silence*, so all six input combinations are asserted in `runTests()`, including the "a league errored, send anyway" carve-out
+- ✅ `runTests()` also covers `retryWithBackoff_`: returns the fn result without retrying, rethrows the original error rather than returning `undefined`, and recovers on a second attempt
+- ✅ `doGet` no longer logs the Yahoo token endpoint's response body verbatim — it parses `error`/`error_description`, falling back to a 200-char truncation. That endpoint is the only one whose payloads carry tokens
+- ✅ CLAUDE.md trimmed 317 → ~230 lines: pre-2026-08-12 changelog moved to [docs/audits/CHANGELOG-ARCHIVE.md](docs/audits/CHANGELOG-ARCHIVE.md), duplicate Deployment Checklist / Manual Steps merged, "Remaining" repointed from the stale 2026-05-18 audit to `_weekly-audit/audits/fantasy-snapshot/`, constants line range corrected to 2-13
+- ⚠️ Still open: the Yahoo approval itself, and the scheduled `checkSetup()` approval watcher (audit idea 1) — neither shipped in this pass
+
 **2026-08-13 (Supabase removal):**
 - Supabase dropped entirely — the project no longer uses any external datastore
 - Removed: `supabaseRequest_`, `isSupabaseConfigured_`, `verifySupabaseSchema_`, `persistWeeklySnapshot_`, `getSeasonTrends_`, `computeSeasonTrends_`, `median_`, their `runTests()` assertions, the `seasonTrends` field on `fetchSnapshotData_`, and the Season Trends renderer block
@@ -224,94 +226,8 @@ Defined at the top of `Code.gs` (lines 1-11):
 - ✅ README retirement notice replaced with active status
 - Note: Script Properties, the Web App deployment, the Yahoo OAuth handshake, and the time-driven trigger must be re-established manually in the IDE — none of them survive in code
 
-**2026-05-22 (audit fixes — applied, committed + pushed in-cycle):**
-- 🔴 0 Critical, 🟠 0 High, 🟡 3 Medium (all fixed), ⚪ 4 Low (2 fixed, 2 intentionally skipped) — prior score 95/100
-- ✅ **Medium:** `buildLeagueSnapshot_` god-function split into `fetchSnapshotData_(league)` (I/O) + `renderSnapshotHtml_(data)` (pure HTML); `buildLeagueSnapshot_` is now a thin wrapper. HTML output preserved verbatim (verified via node render smoke test across full / off-season / empty / partial-error paths)
-- ✅ **Medium:** pure `computeSeasonTrends_(rows)` + `median_(values)` extracted from `getSeasonTrends_`; `runTests()` now covers median (even/odd/empty), std-dev, scoring trend, expected wins, and luck factor
-- ✅ **Medium:** off-season auto-pause — `pullFantasyData` suppresses the near-empty weekly email when no league has an active season; sends a single off-season notice (tracked via `OFFSEASON_NOTICE_SENT`), then stays silent until Week 1. Skipped if any league errored.
-- ✅ **Low:** OAuth `state` nonce — `getYahooAuthUrl_` stores a UUID in `CacheService` and `doGet` validates it (CSRF hardening on the one external endpoint)
-- ✅ **Low:** `retryWithBackoff_` now throws explicitly if the loop exhausts without a result (no implicit `undefined`)
-- ✅ **Low:** `.gitignore` adds `.DS_Store` + `.claude/`; `.DS_Store` untracked
-- Skipped (documented): `LockService` around `pullFantasyData` deliberately not added — audit recommends against it (adds lock-timeout failure modes for negligible payoff on a single-user weekly tool, where Supabase upserts are already idempotent)
+**Older entries:** moved to [docs/audits/CHANGELOG-ARCHIVE.md](docs/audits/CHANGELOG-ARCHIVE.md) (2026-02-09 → 2026-05-22).
 
-**2026-05-18 (audit fixes — applied, committed + pushed in-cycle):**
-- 🔴 0 Critical, 🟠 1 High (fixed), 🟡 4 Medium (2 fixed), ⚪ 3 Low (1 fixed) — Score: 95/100 (+4 from 91)
-- ✅ **High:** `getTopPlayersForWeekAndPosition_` (called 6× in a loop, re-fetching all rostered-player stats per position) replaced with `getTopPlayersByPositionForWeek_` — one batched fetch bucketed by position (~48 → ~8 Yahoo API calls/league)
-- ✅ **Medium:** `isNaN(currentWeek)` added to the season-not-started guard in `buildLeagueSnapshot_` (a NaN week no longer produces a "Week null" email)
-- ✅ **Medium:** `retryWithBackoff_` closures in `yahooApiRequest_` and `supabaseRequest_` now throw on 429/5xx so transient failures actually get exponential backoff (previously masked by `muteHttpExceptions`); Yahoo 401 token-refresh path unaffected
-- ✅ **Low:** plain-text email fallback now decodes `&#39;` and `&quot;`
-- Verified: both 2026-04-22 High items already resolved in committed code (Season Trends ordering at `buildLeagueSnapshot_` persist→trends; single-quote escaping in `escapeHtml_`)
-- Deferred (documented): split `buildLeagueSnapshot_` (~263-line god-function); extract pure `computeSeasonTrends_` for unit-testing; OAuth `state`; `LockService`
-- See [docs/audits/2026-05-18-audit.md](docs/audits/2026-05-18-audit.md)
-
-**2026-04-22 (audit findings):**
-- 🔴 0 Critical, 🟠 2 High (Season Trends reads Supabase before current week is persisted; working tree has uncommitted fix pass), 🟡 3 Medium
-- Score: 91/100 (-2 from 93 — structural, not code-quality; two new High items offset the 100% resolution rate on Apr-06 items)
-- All 8 items from 2026-04-06 resolved in the working tree (bp.name escape, Supabase schema warning, `runTests()` expansion to cover `parseTeamMeta_` + `getPlayerSlot_`, README rewrite, `getWeeklyPowerRankings_` reusing shared scoreboard)
-- Action required: reorder `getSeasonTrends_` to run after `persistWeeklySnapshot_` in `buildLeagueSnapshot_` so trends include the current completed week; commit + `clasp push` the working-tree changes
-- See [docs/audits/2026-04-22-audit.md](docs/audits/2026-04-22-audit.md)
-
-**2026-04-06 (audit fixes — applied in working tree, awaiting commit/push):**
-- ✅ `escapeHtml_(bp.name)` applied in bench summary detail string (completes 100% coverage)
-- ✅ `verifySupabaseSchema_()` return value checked — sends notification email when schema is missing
-- ✅ `runTests()` expanded with `parseTeamMeta_` and `getPlayerSlot_` assertions (22+ assertions total)
-- ✅ `getWeeklyPowerRankings_` now accepts `currentWeekScores` to reuse pre-fetched completedWeek scoreboard
-- ✅ README.md expanded with full setup/OAuth/deployment steps
-- See [docs/audits/2026-04-06-audit.md](docs/audits/2026-04-06-audit.md)
-
-**2026-03-23 (audit fixes):**
-- ✅ `escapeHtml_()` helper added — all dynamic values (team names, league names, error messages) now escaped before HTML insertion
-- ✅ `fetchWeekRosterTeams_()` helper extracted — `getWeekBenchSummary_` and `getWeekStartedPlayerKeys_` now share one roster fetch per run
-- ✅ Supabase persistence moved into `buildLeagueSnapshot_` — eliminates duplicate `getLeagueStandings_` call in `pullFantasyData`
-- ✅ `verifySupabaseSchema_()` added — checks `weekly_snapshots` table on startup; logs clear error if schema is missing
-- ✅ Global constants moved to top of file; `POWER_RANKING_WINDOW` and `SLOW_RUN_THRESHOLD_SEC` promoted to named constants
-- ✅ `runTests()` added — unit tests for `escapeHtml_`, `validateWeek_`, `flattenYahooMeta_` (run manually from IDE)
-- ✅ Execution time alert in `pullFantasyData` — sends notification email if run exceeds 4 minutes
-- ✅ `doGet`: added basic `params.code` length validation
-- ✅ JSDoc added to `getWeekTeamHighlights_`, `getWeekBenchSummary_`, `getWeekStartedPlayerKeys_`
-- ✅ Rollback strategy documented
-- See [docs/audits/2026-03-23-audit.md](docs/audits/2026-03-23-audit.md) for full details.
-
-**2026-02-19 (new features + audit fixes):**
-- ✅ **Matchup Projections** — projected scores, spread, and confidence % for upcoming week
-- ✅ **Weekly Power Rankings** — 3-week rolling average with trend arrows (up/down/stable)
-- ✅ **Season-Long Trends** — scoring trends, consistency, luck factor via Supabase (optional, degrades gracefully)
-- ✅ Supabase persistence in `pullFantasyData()` — upserts standings + scores after each league snapshot
-- ✅ `getWeekMatchups_` signature fixed — added `leagueKey` parameter for multi-league support
-- ✅ `getWeekTeamScores_()` — fetches all team scores from scoreboard
-- ✅ `getWeeklyPowerRankings_()` — rolling average power rankings with trend comparison
-- ✅ `isSupabaseConfigured_()`, `persistWeeklySnapshot_()`, `getSeasonTrends_()` — Supabase helpers
-- ✅ Plain text fallback improved — proper HTML entity decoding and structural newlines
-- ✅ JSDoc with Yahoo API response shapes added to `getAllLeagues_`, `getLeagueStandings_`, `getWeekMatchups_`
-- ✅ `flattenYahooMeta_` now logs warning for multi-key entries instead of silently dropping
-
-**2026-02-17 (audit fixes):**
-- ✅ HTML email output with styled tables, callout boxes, and inline CSS
-- ✅ Plain text fallback generated automatically from HTML
-- ✅ `flattenYahooMeta_()` helper extracted — DRYed ~10 repeated parsing blocks
-- ✅ `parseTeamMeta_()` helper extracted — unified team parsing in matchups and highlights
-- ✅ `getPlayerSlot_()` helper extracted — shared slot-finding for bench/starter logic
-- ✅ Unicode control character `\u0013` replaced with em dash
-- ✅ `.clasp.json.example` template created for onboarding
-
-**2026-02-14 (audit fixes):**
-- ✅ Rate limiting between API batches (`Utilities.sleep(RATE_LIMIT_DELAY_MS)`)
-- ✅ Named constants extracted from magic numbers
-- ✅ CacheService caching for `getPlayerOwnerMap_()` (10-min TTL)
-- ✅ `debugSnapshotToLog()` for testing without email
-- ✅ JSDoc comments on all public entry points
-- ✅ Preseason week validation (graceful handling when `currentWeek < 2`)
-- ✅ Error message format consistency (`[FunctionName]` prefix)
-
-**2026-02-09 (initial audit fixes):**
-- ✅ Extracted hardcoded email to `RECIPIENT_EMAIL` script property
-- ✅ Comprehensive error handling with email notifications
-- ✅ Retry logic with exponential backoff for all API calls
-- ✅ Input validation for week parameters (1-18 range)
-- ✅ Proactive token expiration checks
-- ✅ API call counter and duration logging
-- ✅ Per-league error handling (partial success support)
-- ✅ Email quota checks before sending
-
-**Remaining:**
-See [docs/audits/2026-05-18-audit.md](docs/audits/2026-05-18-audit.md) for current issues and feature ideas.
+**Current issues & feature ideas:** see the latest weekly audit in
+`_weekly-audit/audits/fantasy-snapshot/` — that directory, not `docs/audits/`, is the
+live backlog. `docs/audits/` holds the historical record only.
