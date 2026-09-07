@@ -129,9 +129,11 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 ## Yahoo Fantasy API access (approval required)
 
 > **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day, still
-> pending at the last check on 2026-08-28, and not re-verified since.** The stated 1-2 week
-> review window closed ~2026-08-27. Run `checkSetup()` to get the current answer — no code
-> change can confirm it. Until it is approved,
+> not granted as of a live `checkSetup()` run on 2026-09-07 (25 days out).** The stated
+> 1-2 week review window closed ~2026-08-27. That run confirmed OAuth itself is healthy —
+> the token refreshed proactively and all Script Properties are set — and the failure is
+> purely Yahoo's permission grant: `HTTP 401 oauth_problem="additional_authorization_required"`.
+> Re-run `checkSetup()` for a fresher answer; no code change can confirm it. Until it is approved,
 > `pullFantasyData()` cannot work — every Fantasy API call returns 401. This is the only
 > outstanding blocker; the code, deployment, and Script Properties are all complete.
 >
