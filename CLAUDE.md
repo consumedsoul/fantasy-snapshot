@@ -128,19 +128,38 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 
 ## Yahoo Fantasy API access (approval required)
 
-> **Status: application submitted 2026-08-13, acknowledged by Yahoo the same day, still
-> not granted as of a live `checkSetup()` run on 2026-09-07 (25 days out).** The stated
-> 1-2 week review window closed ~2026-08-27. That run confirmed OAuth itself is healthy —
-> the token refreshed proactively and all Script Properties are set — and the failure is
-> purely Yahoo's permission grant: `HTTP 401 oauth_problem="additional_authorization_required"`.
-> Re-run `checkSetup()` for a fresher answer; no code change can confirm it. Until it is approved,
-> `pullFantasyData()` cannot work — every Fantasy API call returns 401. This is the only
-> outstanding blocker; the code, deployment, and Script Properties are all complete.
+> **Status: contract received and signed 2026-09-09 — awaiting Yahoo's countersignature.**
+> Yahoo's Fantasy API team (fantasyapiapplications@yahoosports.com) sent the *Personal Use —
+> API Access and Use Agreement* via DocuSign (envelope `EC381C9D-2C93-8F78-8263-F0480F1DE641`).
+> Hun signed 2026-09-09; Yahoo's signer (Dipesh Raichura, Sr Dir Product Management) has **not**
+> countersigned — DocuSign status is still *Sent*. **Cover-page Effective Date: 2026-09-15.**
+> A live `checkSetup()` run on 2026-09-09 still returned
+> `HTTP 401 oauth_problem="additional_authorization_required"`, confirming access is not yet
+> provisioned. OAuth itself remains healthy (token refreshed proactively, all Script Properties
+> set, 1 `pullFantasyData` trigger installed). Until Yahoo countersigns and provisions,
+> `pullFantasyData()` cannot work — every Fantasy API call returns 401. This remains the only
+> outstanding blocker; code, deployment, and Script Properties are complete.
 >
 > **When approval arrives:** run `checkSetup()` first — if Yahoo provisioned access onto the
 > existing Client ID, the stored token may already work and the probe will say READY. If the
 > probe still fails, delete `YAHOO_SCOPE` (so it defaults back to `fspt-r`), re-run
 > `startYahooAuth()`, complete the flow, then `checkSetup()` again.
+>
+> **Expect new credentials.** Agreement §2(a) says that after approval the Developer registers
+> the application on the Yahoo Developer Network to receive an Application ID and OAuth 2.0
+> credentials — so Yahoo may issue a **fresh Client ID / Secret** rather than granting Fantasy
+> permission to the existing app. If so: paste the new pair into `YAHOO_CLIENT_ID` /
+> `YAHOO_CLIENT_SECRET`, delete `YAHOO_SCOPE`, then re-run `startYahooAuth()`.
+>
+> **Contract obligations that bind this code** (Personal Use agreement, signed 2026-09-09):
+> - **Attribution (Cover Page + §5):** any interface displaying Yahoo Fantasy Information must
+>   show "Fantasy data provided by Yahoo Fantasy" with a hyperlink to an official Yahoo Fantasy
+>   page. The snapshot email is that interface. **Not yet implemented** — the email body has no
+>   attribution footer.
+> - **No storing, caching or indexing (§2.c.vii):** already satisfied — Supabase was removed
+>   2026-08-13 and every run re-derives from Yahoo.
+> - **Read-only, personal use only:** data is for Hun's own leagues; do not forward, share or
+>   redistribute the snapshot to league mates or any third party.
 
 As of 2026 Yahoo gates Fantasy Sports API access behind an approval application at
 <https://sports.yahoo.com/developer/access/>. Newly created Yahoo apps have **no** Fantasy
