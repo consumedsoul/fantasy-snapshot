@@ -1056,16 +1056,8 @@ function getTopPlayersByPositionForWeek_(week, positions, limit, ownerMap, leagu
 function getPlayerOwnerMap_(leagueKey) {
   leagueKey = leagueKey || getLeagueKey_();
 
-  // Check cache first
-  var cache = CacheService.getScriptCache();
-  var cacheKey = 'ownerMap_' + leagueKey;
-  var cached = cache.get(cacheKey);
-
-  if (cached) {
-    Logger.log('[getPlayerOwnerMap_] Using cached owner map for ' + leagueKey);
-    return JSON.parse(cached);
-  }
-
+  // Deliberately not cached: the Yahoo API agreement (§2.c.vii) forbids storing or
+  // caching Fantasy data, and a weekly run fetches this map only once per league anyway.
   var data = yahooApiRequest_('/league/' + leagueKey + '/teams;out=roster', {});
   var fantasyContent = data && data.fantasy_content;
   var leagueArr = fantasyContent && fantasyContent.league;
@@ -1114,9 +1106,6 @@ function getPlayerOwnerMap_(leagueKey) {
       }
     }
   }
-
-  // Cache for 10 minutes (600 seconds)
-  cache.put(cacheKey, JSON.stringify(ownerMap), 600);
 
   return ownerMap;
 }
@@ -1845,20 +1834,7 @@ function pullFantasyData() {
     // next off-season transition sends a fresh notice.
     props.deleteProperty('OFFSEASON_NOTICE_SENT');
 
-    var htmlBody = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:16px;">';
-    htmlBody += sections.join('<hr style="border:none;border-top:2px solid #eee;margin:24px 0;">');
-
-    if (failedLeagues.length > 0) {
-      htmlBody += '<hr style="border:none;border-top:2px solid #dc3545;margin:24px 0;">';
-      htmlBody += '<h3 style="color:#dc3545;">Errors</h3>';
-      htmlBody += '<ul>';
-      failedLeagues.forEach(function (msg) {
-        htmlBody += '<li>' + msg + '</li>';
-      });
-      htmlBody += '</ul>';
-    }
-
-    htmlBody += '</body></html>';
+    var htmlBody = buildEmailHtml_(sections, failedLeagues);
 
     Logger.log('[pullFantasyData] Snapshot generated (' + sections.length + ' leagues).');
 
@@ -1896,6 +1872,33 @@ function pullFantasyData() {
   }
 }
 
+/**
+ * Assembles the full snapshot email from rendered league sections and error messages.
+ * Pure (no I/O) so runTests() can prove the Yahoo attribution footer is always present:
+ * the Yahoo API agreement (Cover Page + §5) requires every interface showing Fantasy
+ * data to say "Fantasy data provided by Yahoo Fantasy" with a link to Yahoo Fantasy.
+ */
+function buildEmailHtml_(sections, failedLeagues) {
+  var htmlBody = '<html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:16px;">';
+  htmlBody += sections.join('<hr style="border:none;border-top:2px solid #eee;margin:24px 0;">');
+
+  if (failedLeagues.length > 0) {
+    htmlBody += '<hr style="border:none;border-top:2px solid #dc3545;margin:24px 0;">';
+    htmlBody += '<h3 style="color:#dc3545;">Errors</h3>';
+    htmlBody += '<ul>';
+    failedLeagues.forEach(function (msg) {
+      htmlBody += '<li>' + msg + '</li>';
+    });
+    htmlBody += '</ul>';
+  }
+
+  htmlBody += '<hr style="border:none;border-top:1px solid #eee;margin:24px 0 8px;">';
+  htmlBody += '<p style="font-size:12px;color:#666;">Fantasy data provided by ' +
+              '<a href="https://football.fantasysports.yahoo.com/" style="color:#666;">Yahoo Fantasy</a></p>';
+  htmlBody += '</body></html>';
+  return htmlBody;
+}
+
 function sendSnapshotEmail_(subject, htmlBody) {
   var recipientEmail = getRecipientEmail_();
   var quotaRemaining = MailApp.getRemainingDailyQuota();
@@ -1916,6 +1919,8 @@ function sendSnapshotEmail_(subject, htmlBody) {
     .replace(/<hr[^>]*>/gi, '\n---\n')
     .replace(/<\/li>/gi, '\n')
     .replace(/<li[^>]*>/gi, '  - ')
+    // Keep link targets (e.g. the required Yahoo attribution link) as "text (url)"
+    .replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '$2 ($1)')
     .replace(/<[^>]*>/g, '')
     .replace(/&mdash;/g, '—')
     .replace(/&#9733;/g, '*')
@@ -2371,6 +2376,17 @@ function runTests() {
   }, 2);
   assert('retryWithBackoff_: recovers on the second attempt', recovered, 'recovered');
   assert('retryWithBackoff_: retried exactly once', transientCalls, 2);
+
+  // buildEmailHtml_ — the Yahoo API agreement requires attribution on every snapshot
+  // email, so assert it on both the normal and the errored-league paths.
+  var attribution = 'Fantasy data provided by <a href="https://football.fantasysports.yahoo.com/"';
+  var okEmail = buildEmailHtml_(['<h2>League A</h2>'], []);
+  assert('buildEmailHtml_: includes league sections', okEmail.indexOf('<h2>League A</h2>') !== -1, true);
+  assert('buildEmailHtml_: carries the Yahoo attribution link', okEmail.indexOf(attribution) !== -1, true);
+  assert('buildEmailHtml_: attribution sits inside the body',
+    okEmail.indexOf(attribution) < okEmail.indexOf('</body>'), true);
+  var errEmail = buildEmailHtml_([], ['League B: boom']);
+  assert('buildEmailHtml_: attribution survives the errors-only path', errEmail.indexOf(attribution) !== -1, true);
 
   Logger.log('─────────────────────────────────');
   Logger.log('Tests complete: ' + passed + ' passed, ' + failed + ' failed.');

@@ -1,12 +1,12 @@
 # fantasy-snapshot
 
-> **Status: active (revived 2026-08-12), pending Yahoo API access.** The Apps Script deployment has
-> been rebuilt and the code redeployed. As of 2026 Yahoo gates Fantasy Sports API access behind an
-> approval application — a request was submitted 2026-08-13 and acknowledged the same day,
-> and a live `checkSetup()` run on 2026-09-07 confirmed it is still not granted, 25 days out
-> and well past the stated 1-2 week review window. Until it is
-> granted, Fantasy API calls return `401 additional_authorization_required`.
-> Run `checkSetup()` in the Apps Script IDE to check current status.
+> **Status: active (revived 2026-08-12), waiting on Yahoo to countersign the API agreement.**
+> The Apps Script deployment has been rebuilt and the code redeployed. As of 2026 Yahoo gates
+> Fantasy Sports API access behind an approval application — a request was submitted 2026-08-13,
+> and Yahoo sent the *Personal Use — API Access and Use Agreement*, which was signed 2026-09-09
+> (Effective Date 2026-09-15). Yahoo has not countersigned yet, and a live `checkSetup()` run on
+> 2026-09-09 still returned `401 additional_authorization_required`. Run `checkSetup()` in the
+> Apps Script IDE to check current status.
 
 Automated Yahoo Fantasy Football weekly snapshot generator built on Google Apps Script.
 
@@ -102,6 +102,7 @@ The weekly email is delivered as a styled HTML email with a plain text fallback.
 - **Top Waiver Pickups** — best recently added players that were actually started
 - **Position Leaders** — top 3 per position (QB, RB, WR, TE, K, DEF) with ownership
 - **Matchup Projections** — projected scores, spread, and color-coded confidence % for the upcoming week
+- **Yahoo attribution footer** — "Fantasy data provided by Yahoo Fantasy" with a link, required by the Yahoo API agreement
 
 ## Deployment Checklist
 
@@ -137,25 +138,28 @@ You can also run `debugAllLeaguesRaw()` in the IDE to see all league keys for yo
 ## Documentation
 
 - **[CLAUDE.md](CLAUDE.md)** — Comprehensive technical documentation for developers and AI agents
-- **[Audit History](docs/audits/)** — Weekly code audits and improvement tracking
+- **[Audit History](docs/audits/)** — Historical audits only (through 2026-05). Current weekly
+  audits live outside this repo, in `_weekly-audit/audits/fantasy-snapshot/`
 
 ## Project Status
 
 **Current Version:** v1.7
-**Code Health:** See the latest [weekly audit](docs/audits/) for the current score
-**Active Development:** Stalled pending Yahoo Fantasy API approval
-**Last Updated:** 2026-09-07
+**Code Health:** See the latest weekly audit in `_weekly-audit/audits/fantasy-snapshot/` for the current score
+**Active Development:** Waiting on Yahoo to countersign the Fantasy API agreement
+**Last Updated:** 2026-09-10
 
-### Current Status (2026-09-07)
-- Yahoo Fantasy API approval is still not granted — verified by a live `checkSetup()` run on
-  2026-09-07, 25 days after submission. OAuth is healthy (token refreshes, all properties set);
-  Fantasy calls fail with `401 additional_authorization_required`, which only Yahoo can clear
+### Current Status (2026-09-10)
+- Yahoo sent the *Personal Use — API Access and Use Agreement*; it was signed 2026-09-09 and
+  takes effect 2026-09-15. Yahoo has not countersigned or provisioned access yet — a live
+  `checkSetup()` run on 2026-09-09 still returned `401 additional_authorization_required`.
+  OAuth itself is healthy (token refreshes, all properties set)
 - The weekly `pullFantasyData` trigger is installed and will keep firing, so each Tuesday run
-  emails a "Fantasy Snapshot Error" notice until approval lands — at which point the same
+  emails a "Fantasy Snapshot Error" notice until access lands — at which point the same
   trigger delivers a real snapshot instead
-- The latest audit found no critical or high-priority issues
-- The off-season email gate is now a pure, unit-tested function — it governs whether the weekly
-  email sends at all, and the season boundary is imminent
+- The agreement's rules are now met in code: every snapshot email carries the required
+  "Fantasy data provided by Yahoo Fantasy" footer (unit-tested), and no Yahoo data is cached
+  or stored
+- Personal use only: don't forward or share the snapshot with league mates or anyone else
 
 ## Contributing
 

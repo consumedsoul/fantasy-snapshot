@@ -85,11 +85,12 @@ Single file: `Code.gs` (~2,300 lines)
 **Player Data:**
 - `getWeekPointsMapForPlayerKeys_(week, playerKeys, leagueKey)` — Batch fetch player points
 - `getWeekStartedPlayerKeys_(week, leagueKey, rosterTeams?)` — All non-bench players
-- `getPlayerOwnerMap_(leagueKey)` — Maps player_key → team_name
+- `getPlayerOwnerMap_(leagueKey)` — Maps player_key → team_name (intentionally uncached — contract §2.c.vii)
 - `getTopPlayersByPositionForWeek_(week, positions, limit, ownerMap, leagueKey)` — Position leaders for ALL requested positions in one batched fetch; returns `{ position: [topN] }`. Replaced the old per-position `getTopPlayersForWeekAndPosition_` (which re-fetched all player stats 6×)
 
 **Email:**
-- `sendSnapshotEmail_(subject, htmlBody)` — Sends HTML email with plain text fallback and quota check
+- `buildEmailHtml_(sections, failedLeagues)` — Pure: wraps league sections + error list into the email HTML and appends the contract-required "Fantasy data provided by Yahoo Fantasy" footer; unit-tested in `runTests()`
+- `sendSnapshotEmail_(subject, htmlBody)` — Sends HTML email with plain text fallback (links kept as `text (url)`) and quota check
 - `sendNotificationEmail_(subject, body)` — Sends error notifications (non-throwing)
 - `getRecipientEmail_()` — Gets recipient email from script properties
 
@@ -154,10 +155,15 @@ All credentials live in Apps Script Script Properties — never hardcode them.
 > **Contract obligations that bind this code** (Personal Use agreement, signed 2026-09-09):
 > - **Attribution (Cover Page + §5):** any interface displaying Yahoo Fantasy Information must
 >   show "Fantasy data provided by Yahoo Fantasy" with a hyperlink to an official Yahoo Fantasy
->   page. The snapshot email is that interface. **Not yet implemented** — the email body has no
->   attribution footer.
-> - **No storing, caching or indexing (§2.c.vii):** already satisfied — Supabase was removed
->   2026-08-13 and every run re-derives from Yahoo.
+>   page. The snapshot email is that interface. **Implemented 2026-09-10:** `buildEmailHtml_`
+>   appends the footer (linking https://football.fantasysports.yahoo.com/) to every snapshot
+>   email, and `runTests()` asserts it on both the normal and errors-only paths. The plain-text
+>   fallback keeps the link as `Yahoo Fantasy (url)`. Don't remove either.
+> - **No storing, caching or indexing (§2.c.vii):** Supabase was removed 2026-08-13, and the
+>   one transient cache of Fantasy data — `getPlayerOwnerMap_`'s 10-minute `CacheService` entry —
+>   was removed 2026-09-10 (it never hit on a weekly run anyway). Every run re-derives from
+>   Yahoo. The only remaining `CacheService` use is the OAuth `oauth_state` nonce, which is not
+>   Fantasy data. Don't add caching of Yahoo responses.
 > - **Read-only, personal use only:** data is for Hun's own leagues; do not forward, share or
 >   redistribute the snapshot to league mates or any third party.
 
@@ -255,6 +261,12 @@ Defined at the top of `Code.gs` (lines 2-13):
 | `WEEKLY_TRIGGER_HOUR` | 8 | Hour for that trigger, in the script's timezone |
 
 ## Recent Improvements
+
+**2026-09-10 (contract compliance, from the 2026-09-10 audit):**
+- ✅ Yahoo attribution footer added to every snapshot email via new pure `buildEmailHtml_` (extracted from `pullFantasyData`); 4 new `runTests()` assertions guard it
+- ✅ Plain-text fallback now keeps links as `text (url)`, so the attribution link survives there too
+- ✅ Removed `getPlayerOwnerMap_`'s 10-minute `CacheService` cache (contract §2.c.vii); it was fetched once per league per run, so no extra API calls
+- ✅ README status brought up to the signed-agreement state; audit links no longer point at the historical `docs/audits/` as if it were current
 
 **2026-09-04 (audit follow-up):**
 - ✅ Off-season gate extracted as pure `offseasonEmailDecision_(anySeasonActive, failedLeaguesCount, alreadyNotified)` → `'SEND_SNAPSHOT'` / `'SEND_NOTICE'` / `'STAY_SILENT'`; `pullFantasyData` now just executes the decision. Behaviour unchanged — the gate's failure mode is *silence*, so all six input combinations are asserted in `runTests()`, including the "a league errored, send anyway" carve-out
